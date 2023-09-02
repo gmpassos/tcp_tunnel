@@ -55,7 +55,7 @@ Future<void> redirectLocalPort(int listenPort, int targetPort, {String targetHos
 }
 ```
 The `TunnelLocalServer` will listen on `listenPort`, and for each accepted Socket,
-it will initiate a connection to the `localTargetPort` and 
+it will initiate a connection to the `targetPort` and 
 enable bidirectional data traffic redirection between them.
 
 ### Bridge Tunneling:
