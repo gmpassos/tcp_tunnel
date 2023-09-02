@@ -2,6 +2,9 @@ import 'dart:async';
 import 'dart:io';
 
 import 'tcp_tunnel_base.dart';
+import 'package:logging/logging.dart' as logging;
+
+final _log = logging.Logger('TunnelLocalServer');
 
 class TunnelLocalServer {
   final int listenPort;
@@ -25,7 +28,7 @@ class TunnelLocalServer {
       Tunnel.targetPort(socket, targetPort, targetHost: targetHost);
     });
 
-    print('** Started: $this');
+    _log.info('** Started: $this');
   }
 
   void close() {

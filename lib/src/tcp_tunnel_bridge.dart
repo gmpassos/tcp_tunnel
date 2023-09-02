@@ -3,6 +3,10 @@ import 'dart:io';
 
 import 'tcp_tunnel_base.dart';
 
+import 'package:logging/logging.dart' as logging;
+
+final _log = logging.Logger('TunnelBridge');
+
 class TunnelBridge {
   final int listenPort1;
   final int listenPort2;
@@ -34,7 +38,7 @@ class TunnelBridge {
       _connectTunnels();
     });
 
-    print('** Started: $this');
+    _log.info('** Started: $this');
   }
 
   void close() {

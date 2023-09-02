@@ -3,6 +3,10 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:logging/logging.dart' as logging;
+
+final _log = logging.Logger('Tunnel');
+
 typedef OnSocketData = void Function(Uint8List data);
 typedef OnConnectSocket = void Function(Socket socket);
 
@@ -12,9 +16,7 @@ final Zone _zoneGuarded = Zone.current.fork(
 
 void _handleUncaughtError(Zone self, ZoneDelegate parent, Zone zone,
     Object error, StackTrace stackTrace) {
-  print('** ERROR:');
-  print(error);
-  print(stackTrace);
+  _log.severe('Tunnel UncaughtError: $error', error, stackTrace);
 }
 
 class SocketAsync {
@@ -177,7 +179,7 @@ class SocketAsync {
     if (_closed) return;
     _closed = true;
 
-    print("** Closing socket: $this");
+    _log.info("** Closing socket: $this");
 
     var socket = _socket;
     if (socket == null) return;
@@ -186,7 +188,7 @@ class SocketAsync {
       socket.close();
     });
 
-    print("** Closed socket: $this");
+    _log.info("** Closed socket: $this");
 
     var onClose = this.onClose;
     if (onClose != null) {
@@ -204,43 +206,61 @@ class SocketAsync {
   }
 }
 
+typedef TunnelCallback = void Function(Tunnel tunnel)?;
+
 class Tunnel {
-  factory Tunnel.connectAsync(
-      String remoteHost, int remotePort, int targetPort) {
+  factory Tunnel.connectAsync(String remoteHost, int remotePort, int targetPort,
+      {String targetHost = 'localhost',
+      TunnelCallback? onStart,
+      TunnelCallback? onClose,
+      bool verbose = false}) {
     var socket2Completer = Completer<Socket>();
 
     final socket1 =
         SocketAsync.connect(remoteHost, remotePort, onFirstData: (_) {
-      Socket.connect('localhost', targetPort)
+      Socket.connect(targetHost, targetPort)
           .then((socket2) => socket2Completer.complete(socket2));
     });
 
     final socket2 = SocketAsync.unresolved(socket2Completer.future);
 
-    return Tunnel(socket1, socket2);
+    return Tunnel(socket1, socket2,
+        onStart: onStart, onClose: onClose, verbose: verbose);
   }
 
-  factory Tunnel.connect(String remoteHost, int remotePort, int targetPort) {
+  factory Tunnel.connect(String remoteHost, int remotePort, int targetPort,
+      {String targetHost = 'localhost',
+      TunnelCallback? onStart,
+      TunnelCallback? onClose,
+      bool verbose = false}) {
     final socket1 = SocketAsync.connect(remoteHost, remotePort);
-    final socket2 = SocketAsync.connect('localhost', targetPort);
-    return Tunnel(socket1, socket2);
+    final socket2 = SocketAsync.connect(targetHost, targetPort);
+    return Tunnel(socket1, socket2,
+        onStart: onStart, onClose: onClose, verbose: verbose);
   }
 
-  static Future<Tunnel> targetPort(Socket socketA, int targetPort, {String targetHost = 'localhost'}) async {
+  static Future<Tunnel> targetPort(Socket socketA, int targetPort,
+      {String targetHost = 'localhost'}) async {
     final socketB = await Socket.connect(targetHost, targetPort);
     return Tunnel(SocketAsync.from(socketA), SocketAsync.from(socketB));
   }
 
-  factory Tunnel.withSockets(Socket socketA, Socket socketB) =>
-      Tunnel(SocketAsync.from(socketA), SocketAsync.from(socketB));
+  factory Tunnel.withSockets(Socket socketA, Socket socketB,
+          {TunnelCallback? onStart,
+          TunnelCallback? onClose,
+          bool verbose = false}) =>
+      Tunnel(SocketAsync.from(socketA), SocketAsync.from(socketB),
+          onStart: onStart, onClose: onClose, verbose: verbose);
 
   final SocketAsync _socketA;
   final SocketAsync _socketB;
 
-  Tunnel(
-    this._socketA,
-    this._socketB,
-  ) {
+  final TunnelCallback? onStart;
+
+  final bool verbose;
+
+  Tunnel(this._socketA, this._socketB,
+      {this.onStart, this.onClose, this.verbose = false}) {
     _start();
   }
 
@@ -250,19 +270,29 @@ class Tunnel {
       _socketB.onClose = _onSocketClose;
 
       _socketA.listen((Uint8List data) {
-        print('[DATA-A] <<<${latin1.decode(data)}>>>');
+        if (verbose) {
+          _log.info('[DATA-A] <<<${latin1.decode(data)}>>>');
+        }
         _socketB.add(data);
         //_socketB.flush();
       });
 
       _socketB.listen((Uint8List data) {
-        print('[DATA-B] <<<${latin1.decode(data)}>>>');
+        if (verbose) {
+          _log.info('[DATA-B] <<<${latin1.decode(data)}>>>');
+        }
         _socketA.add(data);
         //_socketA.flush();
       });
     });
 
-    print("** Started: $this");
+    _log.info("** Started: $this");
+
+    final onStart = this.onStart;
+
+    if (onStart != null) {
+      onStart(this);
+    }
   }
 
   void _onSocketClose(SocketAsync socketAsync) {
