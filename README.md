@@ -2,6 +2,7 @@
 
 [![pub package](https://img.shields.io/pub/v/tcp_tunnel.svg?logo=dart&logoColor=00b9fc)](https://pub.dartlang.org/packages/tcp_tunnel)
 [![Null Safety](https://img.shields.io/badge/null-safety-brightgreen)](https://dart.dev/null-safety)
+[![Codecov](https://img.shields.io/codecov/c/github/gmpassos/tcp_tunnel)](https://app.codecov.io/gh/gmpassos/tcp_tunnel)
 [![Dart CI](https://github.com/gmpassos/tcp_tunnel/actions/workflows/dart.yml/badge.svg?branch=master)](https://github.com/gmpassos/tcp_tunnel/actions/workflows/dart.yml)
 [![GitHub Tag](https://img.shields.io/github/v/tag/gmpassos/tcp_tunnel?logo=git&logoColor=white)](https://github.com/gmpassos/tcp_tunnel/releases)
 [![New Commits](https://img.shields.io/github/commits-since/gmpassos/tcp_tunnel/latest?logo=git&logoColor=white)](https://github.com/gmpassos/tcp_tunnel/network)
