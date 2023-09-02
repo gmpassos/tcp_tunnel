@@ -19,6 +19,7 @@ void _handleUncaughtError(Zone self, ZoneDelegate parent, Zone zone,
   _log.severe('Tunnel UncaughtError: $error', error, stackTrace);
 }
 
+/// Helper class to handle tunnel [Sockets].
 class SocketAsync {
   static int _idCount = 0;
 
@@ -46,20 +47,25 @@ class SocketAsync {
     return socket;
   }
 
+  /// The handled [Socket].
   Socket get socket => _socket!;
 
+  /// Returns `true` if [socket] is resolved/defined.
   bool get isResolved => _socket != null;
 
   String? _address;
 
+  /// The [socket] address.
   String get address => _address!;
 
+  /// The [socket] remote address.
   String get remoteAddress => _remoteAddress!;
 
   String? _remoteAddress;
 
   int? _port;
 
+  /// The [socket] port.
   int get port => _port!;
 
   void _setSocket(Socket skt, OnConnectSocket? onConnect) {
@@ -147,6 +153,9 @@ class SocketAsync {
     });
   }
 
+  /// Add [data] to this [socket].
+  /// If the [socket] is NOT resolved yet (![isResolved]) adds to a temporary buffer,
+  /// that is automatically flushed once the [socket] is resolved.
   void add(Uint8List data) {
     var socket = _socket;
     if (socket == null) {
@@ -162,9 +171,11 @@ class SocketAsync {
     }
   }
 
+  /// Flushes [socket] if [isResolved].
   Future<bool> flush() =>
       _socket?.flush().then((_) => true) ?? Future.value(false);
 
+  /// Same as [close] but with a [delay].
   void closeAsync({Duration delay = const Duration(seconds: 1)}) {
     Future.delayed(delay, close);
   }
@@ -175,6 +186,7 @@ class SocketAsync {
 
   bool get isClosed => _closed;
 
+  /// Closes the [socket] (if resolved).
   void close() {
     if (_closed) return;
     _closed = true;
@@ -208,7 +220,9 @@ class SocketAsync {
 
 typedef TunnelCallback = void Function(Tunnel tunnel)?;
 
+/// A tunnel between 2 sockets ([_socketA] and [_socketB]).
 class Tunnel {
+  /// Creates a tunnel with asynchronous connections.
   factory Tunnel.connectAsync(String remoteHost, int remotePort, int targetPort,
       {String targetHost = 'localhost',
       TunnelCallback? onStart,
@@ -228,6 +242,7 @@ class Tunnel {
         onStart: onStart, onClose: onClose, verbose: verbose);
   }
 
+  /// Creates a tunnel with synchronous connections.
   factory Tunnel.connect(String remoteHost, int remotePort, int targetPort,
       {String targetHost = 'localhost',
       TunnelCallback? onStart,
@@ -245,6 +260,7 @@ class Tunnel {
     return Tunnel(SocketAsync.from(socketA), SocketAsync.from(socketB));
   }
 
+  /// Creates a tunnel with [socketA] and [socketB].
   factory Tunnel.withSockets(Socket socketA, Socket socketB,
           {TunnelCallback? onStart,
           TunnelCallback? onClose,
@@ -255,8 +271,10 @@ class Tunnel {
   final SocketAsync _socketA;
   final SocketAsync _socketB;
 
+  /// Called when the tunnel is started (both sockets are ready for data redirection).
   final TunnelCallback? onStart;
 
+  /// If `true` this tunnel will log data redirection.
   final bool verbose;
 
   Tunnel(this._socketA, this._socketB,
@@ -299,14 +317,17 @@ class Tunnel {
     closeAsync();
   }
 
+  /// Same as [close] but with a [delay].
   void closeAsync({Duration delay = const Duration(seconds: 1)}) {
     Future.delayed(delay, close);
   }
 
-  void Function(Tunnel tunnel)? onClose;
+  /// Called when the tunnel is closed (when one of the [Sockets] is closed or [closed] is called).
+  TunnelCallback? onClose;
 
   bool _closed = false;
 
+  /// Closes the tunnels and its [Sockets].
   void close() {
     if (_closed) return;
     _closed = true;

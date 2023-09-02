@@ -6,9 +6,15 @@ import 'package:logging/logging.dart' as logging;
 
 final _log = logging.Logger('TunnelLocalServer');
 
+/// A tunnel that listens to a local port and redirects to a [targetPort].
 class TunnelLocalServer {
+  /// The local port to listen.
   final int listenPort;
+
+  /// The target port to connect when a [Socket] is accepted (at [listenPort]).
   final int targetPort;
+
+  /// The target host to connect when a [Socket] is accepted (at [listenPort]).
   final String targetHost;
 
   TunnelLocalServer(this.listenPort, this.targetPort,
@@ -18,6 +24,7 @@ class TunnelLocalServer {
 
   bool _started = false;
 
+  /// Starts the tunnel server.
   Future<void> start() async {
     if (_started) return;
     _started = true;
@@ -31,6 +38,7 @@ class TunnelLocalServer {
     _log.info('** Started: $this');
   }
 
+  /// Closes the tunnel server.
   void close() {
     _server.close();
   }

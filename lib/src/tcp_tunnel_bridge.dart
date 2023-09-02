@@ -7,6 +7,7 @@ import 'package:logging/logging.dart' as logging;
 
 final _log = logging.Logger('TunnelBridge');
 
+/// Creates a tunnel bridge between 2 listening ports ([listenPort1] and [listenPort2]).
 class TunnelBridge {
   final int listenPort1;
   final int listenPort2;
@@ -21,6 +22,7 @@ class TunnelBridge {
   final List<Socket> _server1SocketsQueue = <Socket>[];
   final List<Socket> _server2SocketsQueue = <Socket>[];
 
+  /// Starts the bridge.
   Future<void> start() async {
     if (_started) return;
     _started = true;
@@ -41,6 +43,7 @@ class TunnelBridge {
     _log.info('** Started: $this');
   }
 
+  /// Closes the bridge.
   void close() {
     _server1.close();
     _server2.close();
