@@ -17,8 +17,11 @@ class TunnelLocalServer {
   /// The target host to connect when a [Socket] is accepted (at [listenPort]).
   final String targetHost;
 
-  TunnelLocalServer(this.listenPort, this.targetPort,
-      {this.targetHost = 'localhost'});
+  TunnelLocalServer(
+    this.listenPort,
+    this.targetPort, {
+    this.targetHost = 'localhost',
+  });
 
   late final ServerSocket _server;
 

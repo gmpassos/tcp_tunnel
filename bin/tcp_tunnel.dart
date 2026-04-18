@@ -65,7 +65,11 @@ void _run(String mode, List<String> args, bool loop) {
 }
 
 void _runModeClient(
-    String remoteHost, int remotePort, int localTargetPort, bool loop) {
+  String remoteHost,
+  int remotePort,
+  int localTargetPort,
+  bool loop,
+) {
   var tunnel = Tunnel.connect(remoteHost, remotePort, localTargetPort);
 
   if (loop) {

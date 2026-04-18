@@ -16,10 +16,16 @@ void main() async {
   // 3307 <-> 8035 <-> 8036 <-> 3306
 }
 
-Future<void> redirectLocalPort(int listenPort, int targetPort,
-    {String targetHost = 'localhost'}) async {
-  await TunnelLocalServer(listenPort, targetPort, targetHost: targetHost)
-      .start();
+Future<void> redirectLocalPort(
+  int listenPort,
+  int targetPort, {
+  String targetHost = 'localhost',
+}) async {
+  await TunnelLocalServer(
+    listenPort,
+    targetPort,
+    targetHost: targetHost,
+  ).start();
 }
 
 Future<void> bridgePorts(int listenPort1, int listenPort2) async {
@@ -27,7 +33,10 @@ Future<void> bridgePorts(int listenPort1, int listenPort2) async {
 }
 
 Future<void> clientTunnel(
-    String remoteHost, int remotePort, int localTargetPort) async {
+  String remoteHost,
+  int remotePort,
+  int localTargetPort,
+) async {
   var tunnel = Tunnel.connect(remoteHost, remotePort, localTargetPort);
 
   tunnel.onClose = (t) {

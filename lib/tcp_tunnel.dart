@@ -1,5 +1,5 @@
 /// TCP Tunnel library
-library tcp_tunnel;
+library;
 
 export 'src/tcp_tunnel_base.dart';
 export 'src/tcp_tunnel_server.dart';

@@ -41,11 +41,12 @@ void main() {
 
       var clientData = clientsData.values.first;
       expect(
-          clientData,
-          equals([
-            [1, 2, 3, 4, 5],
-            [6, 7, 8, 9, 10],
-          ]));
+        clientData,
+        equals([
+          [1, 2, 3, 4, 5],
+          [6, 7, 8, 9, 10],
+        ]),
+      );
 
       server.close();
     });
@@ -91,21 +92,28 @@ void main() {
 
       var clientData = clientsData.values.first;
       expect(
-          clientData,
-          equals([
-            [1, 2, 3, 4, 5],
-            [6, 7, 8, 9, 10],
-          ]));
+        clientData,
+        equals([
+          [1, 2, 3, 4, 5],
+          [6, 7, 8, 9, 10],
+        ]),
+      );
 
       server.close();
     });
   });
 }
 
-Future<TunnelLocalServer> redirectLocalPort(int listenPort, int targetPort,
-    {String targetHost = 'localhost'}) async {
-  var tunnelLocalServer =
-      TunnelLocalServer(listenPort, targetPort, targetHost: targetHost);
+Future<TunnelLocalServer> redirectLocalPort(
+  int listenPort,
+  int targetPort, {
+  String targetHost = 'localhost',
+}) async {
+  var tunnelLocalServer = TunnelLocalServer(
+    listenPort,
+    targetPort,
+    targetHost: targetHost,
+  );
   await tunnelLocalServer.start();
   return tunnelLocalServer;
 }
@@ -117,10 +125,18 @@ Future<TunnelBridge> bridgePorts(int listenPort1, int listenPort2) async {
 }
 
 Future<Tunnel> clientTunnel(
-    String remoteHost, int remotePort, int localTargetPort,
-    {TunnelCallback? onStart, TunnelCallback? onClose}) async {
-  var tunnel =
-      Tunnel.connect(remoteHost, remotePort, localTargetPort, onStart: onStart);
+  String remoteHost,
+  int remotePort,
+  int localTargetPort, {
+  TunnelCallback? onStart,
+  TunnelCallback? onClose,
+}) async {
+  var tunnel = Tunnel.connect(
+    remoteHost,
+    remotePort,
+    localTargetPort,
+    onStart: onStart,
+  );
   tunnel.onClose = onClose;
   return tunnel;
 }

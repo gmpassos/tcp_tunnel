@@ -11,11 +11,16 @@ typedef OnSocketData = void Function(Uint8List data);
 typedef OnConnectSocket = void Function(Socket socket);
 
 final Zone _zoneGuarded = Zone.current.fork(
-    specification:
-        ZoneSpecification(handleUncaughtError: _handleUncaughtError));
+  specification: ZoneSpecification(handleUncaughtError: _handleUncaughtError),
+);
 
-void _handleUncaughtError(Zone self, ZoneDelegate parent, Zone zone,
-    Object error, StackTrace stackTrace) {
+void _handleUncaughtError(
+  Zone self,
+  ZoneDelegate parent,
+  Zone zone,
+  Object error,
+  StackTrace stackTrace,
+) {
   _log.severe('Tunnel UncaughtError: $error', error, stackTrace);
 }
 
@@ -31,17 +36,27 @@ class SocketAsync {
 
   SocketAsync._({OnSocketData? onFirstData}) : _onFirstData = onFirstData;
 
-  factory SocketAsync.from(Socket skt,
-          {void Function(Uint8List data)? onFirstData}) =>
-      SocketAsync._(onFirstData: onFirstData).._setSocket(skt, null);
+  factory SocketAsync.from(
+    Socket skt, {
+    void Function(Uint8List data)? onFirstData,
+  }) => SocketAsync._(onFirstData: onFirstData).._setSocket(skt, null);
 
-  factory SocketAsync.connect(String host, int port,
-          {OnConnectSocket? onConnect, OnSocketData? onFirstData}) =>
-      SocketAsync.unresolved(Socket.connect(host, port),
-          onConnect: onConnect, onFirstData: onFirstData);
+  factory SocketAsync.connect(
+    String host,
+    int port, {
+    OnConnectSocket? onConnect,
+    OnSocketData? onFirstData,
+  }) => SocketAsync.unresolved(
+    Socket.connect(host, port),
+    onConnect: onConnect,
+    onFirstData: onFirstData,
+  );
 
-  factory SocketAsync.unresolved(Future<Socket> socketResolver,
-      {OnConnectSocket? onConnect, OnSocketData? onFirstData}) {
+  factory SocketAsync.unresolved(
+    Future<Socket> socketResolver, {
+    OnConnectSocket? onConnect,
+    OnSocketData? onFirstData,
+  }) {
     var socket = SocketAsync._(onFirstData: onFirstData);
     socketResolver.then((skt) => socket._setSocket(skt, onConnect));
     return socket;
@@ -131,10 +146,12 @@ class SocketAsync {
     }
 
     _zoneGuarded.runGuarded(() {
-      _socket!.listen(resolvedListener,
-          onError: (e) => closeAsync(),
-          onDone: closeAsync,
-          cancelOnError: true);
+      _socket!.listen(
+        resolvedListener,
+        onError: (e) => closeAsync(),
+        onDone: closeAsync,
+        cancelOnError: true,
+      );
     });
   }
 
@@ -223,50 +240,83 @@ typedef TunnelCallback = void Function(Tunnel tunnel)?;
 /// A tunnel between 2 sockets ([_socketA] and [_socketB]).
 class Tunnel {
   /// Creates a tunnel with asynchronous connections.
-  factory Tunnel.connectAsync(String remoteHost, int remotePort, int targetPort,
-      {String targetHost = 'localhost',
-      TunnelCallback? onStart,
-      TunnelCallback? onClose,
-      bool verbose = false}) {
+  factory Tunnel.connectAsync(
+    String remoteHost,
+    int remotePort,
+    int targetPort, {
+    String targetHost = 'localhost',
+    TunnelCallback? onStart,
+    TunnelCallback? onClose,
+    bool verbose = false,
+  }) {
     var socket2Completer = Completer<Socket>();
 
-    final socket1 =
-        SocketAsync.connect(remoteHost, remotePort, onFirstData: (_) {
-      Socket.connect(targetHost, targetPort)
-          .then((socket2) => socket2Completer.complete(socket2));
-    });
+    final socket1 = SocketAsync.connect(
+      remoteHost,
+      remotePort,
+      onFirstData: (_) {
+        Socket.connect(
+          targetHost,
+          targetPort,
+        ).then((socket2) => socket2Completer.complete(socket2));
+      },
+    );
 
     final socket2 = SocketAsync.unresolved(socket2Completer.future);
 
-    return Tunnel(socket1, socket2,
-        onStart: onStart, onClose: onClose, verbose: verbose);
+    return Tunnel(
+      socket1,
+      socket2,
+      onStart: onStart,
+      onClose: onClose,
+      verbose: verbose,
+    );
   }
 
   /// Creates a tunnel with synchronous connections.
-  factory Tunnel.connect(String remoteHost, int remotePort, int targetPort,
-      {String targetHost = 'localhost',
-      TunnelCallback? onStart,
-      TunnelCallback? onClose,
-      bool verbose = false}) {
+  factory Tunnel.connect(
+    String remoteHost,
+    int remotePort,
+    int targetPort, {
+    String targetHost = 'localhost',
+    TunnelCallback? onStart,
+    TunnelCallback? onClose,
+    bool verbose = false,
+  }) {
     final socket1 = SocketAsync.connect(remoteHost, remotePort);
     final socket2 = SocketAsync.connect(targetHost, targetPort);
-    return Tunnel(socket1, socket2,
-        onStart: onStart, onClose: onClose, verbose: verbose);
+    return Tunnel(
+      socket1,
+      socket2,
+      onStart: onStart,
+      onClose: onClose,
+      verbose: verbose,
+    );
   }
 
-  static Future<Tunnel> targetPort(Socket socketA, int targetPort,
-      {String targetHost = 'localhost'}) async {
+  static Future<Tunnel> targetPort(
+    Socket socketA,
+    int targetPort, {
+    String targetHost = 'localhost',
+  }) async {
     final socketB = await Socket.connect(targetHost, targetPort);
     return Tunnel(SocketAsync.from(socketA), SocketAsync.from(socketB));
   }
 
   /// Creates a tunnel with [socketA] and [socketB].
-  factory Tunnel.withSockets(Socket socketA, Socket socketB,
-          {TunnelCallback? onStart,
-          TunnelCallback? onClose,
-          bool verbose = false}) =>
-      Tunnel(SocketAsync.from(socketA), SocketAsync.from(socketB),
-          onStart: onStart, onClose: onClose, verbose: verbose);
+  factory Tunnel.withSockets(
+    Socket socketA,
+    Socket socketB, {
+    TunnelCallback? onStart,
+    TunnelCallback? onClose,
+    bool verbose = false,
+  }) => Tunnel(
+    SocketAsync.from(socketA),
+    SocketAsync.from(socketB),
+    onStart: onStart,
+    onClose: onClose,
+    verbose: verbose,
+  );
 
   final SocketAsync _socketA;
   final SocketAsync _socketB;
@@ -277,8 +327,13 @@ class Tunnel {
   /// If `true` this tunnel will log data redirection.
   final bool verbose;
 
-  Tunnel(this._socketA, this._socketB,
-      {this.onStart, this.onClose, this.verbose = false}) {
+  Tunnel(
+    this._socketA,
+    this._socketB, {
+    this.onStart,
+    this.onClose,
+    this.verbose = false,
+  }) {
     _start();
   }
 
