@@ -82,21 +82,25 @@ void _run(String mode, List<String> args, bool loop, bool verbose) {
 
     // optional 4th arg
     var maxTunnels = _parseMaxTunnels(args);
+    var parallels = _parseParallels(args, maxTunnels);
 
     print('-- Loop: $loop');
     print('-- Remote: $remoteHost:$remotePort');
     print('-- Local target port: $localTargetPort');
     print('-- Max tunnels: $maxTunnels');
+    print('-- Parallel connections: $parallels');
     print('-- Verbose: $verbose');
 
-    _runModeClient(
-      remoteHost,
-      remotePort,
-      localTargetPort,
-      loop,
-      maxTunnels,
-      verbose,
-    );
+    for (var i = 0; i < parallels; ++i) {
+      _runModeClient(
+        remoteHost,
+        remotePort,
+        localTargetPort,
+        loop,
+        maxTunnels,
+        verbose,
+      );
+    }
   } else if (mode == 'bridge') {
     var listenPort1 = int.parse(args[0]);
     var listenPort2 = int.parse(args[1]);
@@ -113,11 +117,30 @@ void _run(String mode, List<String> args, bool loop, bool verbose) {
 }
 
 int _parseMaxTunnels(List<String> args, {int defaultValue = 4}) {
+  return _parseArgInt(args, [
+    '--max-tunnels',
+    '--maxtunnels',
+  ], defaultValue: defaultValue);
+}
+
+int _parseParallels(List<String> args, int maxTunnels, {int defaultValue = 2}) {
+  return _parseArgInt(args, [
+    '--concurrency',
+    '--parallel',
+    '--parallels',
+  ], defaultValue: defaultValue).clamp(1, maxTunnels);
+}
+
+int _parseArgInt(
+  List<String> args,
+  List<String> names, {
+  required int defaultValue,
+}) {
   for (var i = 0; i < args.length; i++) {
     var a = args[i];
     var aLC = a.toLowerCase();
 
-    if (aLC == '--max-tunnels' || aLC == '--maxtunnels') {
+    if (names.contains(aLC)) {
       if (i + 1 >= args.length) {
         throw ArgumentError('Missing value for $a');
       }

@@ -8,8 +8,13 @@
   - Changed default logging level in `_configureLogging` from `ALL` to `INFO`.
   - Refactored main logic to `_run` with verbose and loop parameters.
   - Added `_withFlag` helper to parse boolean flags.
-  - Added `_parseMaxTunnels` helper to parse max tunnels option.
-  - Managed multiple tunnels with `_tunnels` list and recursive connection logic in client mode.
+ - Client mode:
+    - Added support for parallel connections with a new `_parseParallels` method.
+    - Run multiple client tunnels in parallel based on the parsed parallel count.
+    - Managed multiple tunnels with `_tunnels` list and recursive connection logic in client mode.
+  - Argument parsing:
+    - Added `_parseParallels` to parse concurrency-related flags (`--concurrency`, `--parallel`, `--parallels`) with clamping between 2 and max tunnels.
+    - Refactored argument parsing into `_parseArgInt` helper method used by `_parseMaxTunnels` and `_parseParallels`.
 
 - `lib/src/tcp_tunnel_base.dart`:
   - Added guarded zone support with `Tunnel.zoneGuarded` and `Tunnel.runGuarded`.
