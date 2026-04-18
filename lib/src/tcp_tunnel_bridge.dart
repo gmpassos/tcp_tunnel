@@ -1,9 +1,9 @@
 import 'dart:async';
 import 'dart:io';
 
-import 'tcp_tunnel_base.dart';
-
 import 'package:logging/logging.dart' as logging;
+
+import 'tcp_tunnel_base.dart';
 
 final _log = logging.Logger('TunnelBridge');
 
@@ -12,7 +12,9 @@ class TunnelBridge {
   final int listenPort1;
   final int listenPort2;
 
-  TunnelBridge(this.listenPort1, this.listenPort2);
+  final bool verbose;
+
+  TunnelBridge(this.listenPort1, this.listenPort2, {this.verbose = false});
 
   late final ServerSocket _server1;
   late final ServerSocket _server2;
@@ -55,7 +57,11 @@ class TunnelBridge {
     var socket1 = _server1SocketsQueue.removeAt(0);
     var socket2 = _server2SocketsQueue.removeAt(0);
 
-    Tunnel.withSockets(socket1, socket2);
+    var tunnel = Tunnel.withSockets(socket1, socket2, verbose: verbose);
+
+    if (verbose) {
+      _log.info('Connected> $tunnel');
+    }
   }
 
   @override

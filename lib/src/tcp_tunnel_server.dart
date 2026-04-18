@@ -1,8 +1,8 @@
 import 'dart:async';
 import 'dart:io';
 
-import 'tcp_tunnel_base.dart';
 import 'package:logging/logging.dart' as logging;
+import 'tcp_tunnel_base.dart';
 
 final _log = logging.Logger('TunnelLocalServer');
 
@@ -17,10 +17,13 @@ class TunnelLocalServer {
   /// The target host to connect when a [Socket] is accepted (at [listenPort]).
   final String targetHost;
 
+  final bool verbose;
+
   TunnelLocalServer(
     this.listenPort,
     this.targetPort, {
     this.targetHost = 'localhost',
+    this.verbose = false,
   });
 
   late final ServerSocket _server;
@@ -35,7 +38,13 @@ class TunnelLocalServer {
     final server = _server = await ServerSocket.bind('0.0.0.0', listenPort);
 
     server.listen((Socket socket) {
-      Tunnel.targetPort(socket, targetPort, targetHost: targetHost);
+      var tunnel = Tunnel.targetPort(
+        socket,
+        targetPort,
+        targetHost: targetHost,
+        verbose: verbose,
+      );
+      _log.info("Connected> $tunnel");
     });
 
     _log.info('** Started: $this');

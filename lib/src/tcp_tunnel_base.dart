@@ -239,7 +239,36 @@ typedef TunnelCallback = void Function(Tunnel tunnel)?;
 
 /// A tunnel between 2 sockets ([_socketA] and [_socketB]).
 class Tunnel {
-  /// Creates a tunnel with asynchronous connections.
+  static Zone get zoneGuarded => _zoneGuarded;
+
+  static void runGuarded(void Function() action) =>
+      _zoneGuarded.runGuarded(action);
+
+  final Completer<Tunnel> _tunnelReadyCompleter = Completer();
+
+  Future<Tunnel> get onReady => _tunnelReadyCompleter.future;
+
+  void _notifyTunnelReady() {
+    if (!_tunnelReadyCompleter.isCompleted) {
+      _tunnelReadyCompleter.complete(this);
+    }
+  }
+
+  /// Creates a tunnel using a two-phase, lazy connection strategy.
+  ///
+  /// 1. Connects to [remoteHost]:[remotePort].
+  /// 2. Waits for the first incoming data from the remote side.
+  /// 3. Only then connects to [targetHost]:[targetPort].
+  ///
+  /// The tunnel is considered ready ([onReady]) only after this sequence
+  /// completes: remote connect → first data → target connect.
+  ///
+  /// This avoids opening the target connection unless it is actually needed.
+  ///
+  /// [onStart] is called when the tunnel starts the connection process.
+  /// [onClose] is called when the tunnel is closed.
+  ///
+  /// If [verbose] is true, enables detailed logging.
   factory Tunnel.connectAsync(
     String remoteHost,
     int remotePort,
@@ -264,13 +293,19 @@ class Tunnel {
 
     final socket2 = SocketAsync.unresolved(socket2Completer.future);
 
-    return Tunnel(
+    final tunnel = Tunnel(
       socket1,
       socket2,
       onStart: onStart,
       onClose: onClose,
       verbose: verbose,
     );
+
+    socket2Completer.future.then((_) {
+      Future.microtask(() => tunnel._notifyTunnelReady());
+    });
+
+    return tunnel;
   }
 
   /// Creates a tunnel with synchronous connections.
@@ -283,24 +318,52 @@ class Tunnel {
     TunnelCallback? onClose,
     bool verbose = false,
   }) {
-    final socket1 = SocketAsync.connect(remoteHost, remotePort);
-    final socket2 = SocketAsync.connect(targetHost, targetPort);
-    return Tunnel(
+    final socket1Completer = Completer<bool>();
+    final socket2Completer = Completer<bool>();
+
+    final socket1 = SocketAsync.connect(
+      remoteHost,
+      remotePort,
+      onConnect: (_) => socket1Completer.complete(true),
+    );
+
+    final socket2 = SocketAsync.connect(
+      targetHost,
+      targetPort,
+      onConnect: (_) => socket2Completer.complete(true),
+    );
+
+    final tunnel = Tunnel(
       socket1,
       socket2,
       onStart: onStart,
       onClose: onClose,
       verbose: verbose,
     );
+
+    socket1Completer.future.then((_) {
+      socket2Completer.future.then((_) {
+        tunnel._notifyTunnelReady();
+      });
+    });
+
+    return tunnel;
   }
 
   static Future<Tunnel> targetPort(
     Socket socketA,
     int targetPort, {
     String targetHost = 'localhost',
+    bool verbose = false,
   }) async {
     final socketB = await Socket.connect(targetHost, targetPort);
-    return Tunnel(SocketAsync.from(socketA), SocketAsync.from(socketB));
+    final tunnel = Tunnel(
+      SocketAsync.from(socketA),
+      SocketAsync.from(socketB),
+      verbose: verbose,
+    );
+    tunnel._notifyTunnelReady();
+    return tunnel;
   }
 
   /// Creates a tunnel with [socketA] and [socketB].
@@ -310,13 +373,17 @@ class Tunnel {
     TunnelCallback? onStart,
     TunnelCallback? onClose,
     bool verbose = false,
-  }) => Tunnel(
-    SocketAsync.from(socketA),
-    SocketAsync.from(socketB),
-    onStart: onStart,
-    onClose: onClose,
-    verbose: verbose,
-  );
+  }) {
+    final tunnel = Tunnel(
+      SocketAsync.from(socketA),
+      SocketAsync.from(socketB),
+      onStart: onStart,
+      onClose: onClose,
+      verbose: verbose,
+    );
+    tunnel._notifyTunnelReady();
+    return tunnel;
+  }
 
   final SocketAsync _socketA;
   final SocketAsync _socketB;
@@ -370,6 +437,9 @@ class Tunnel {
 
   void _onSocketClose(SocketAsync socketAsync) {
     closeAsync();
+    if (verbose) {
+      _log.info("Closed> $this");
+    }
   }
 
   /// Same as [close] but with a [delay].
