@@ -21,9 +21,7 @@ void main(List<String> args) {
   var loop = _withFlag(args, 'loop');
   var verbose = _withFlag(args, 'verbose');
 
-  if (verbose) {
-    _configureLogging();
-  }
+  _configureLogging(level: verbose ? logging.Level.ALL : logging.Level.INFO);
 
   Tunnel.runGuarded(() {
     _run(mode, args, loop, verbose);
@@ -43,7 +41,7 @@ bool _withFlag(List<String> args, String flag) {
   return false;
 }
 
-void _configureLogging({logging.Level level = logging.Level.ALL}) {
+void _configureLogging({logging.Level level = logging.Level.INFO}) {
   logging.Logger.root.level = level;
 
   logging.Logger.root.onRecord.listen((record) {

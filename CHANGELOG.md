@@ -4,6 +4,8 @@
   - Added support for `verbose` flag in CLI.
   - Added support for `loop` flag and `--max-tunnels` option in client mode.
   - Added structured logging using `package:logging`.
+  - Updated `_configureLogging` to always configure logging with level `ALL` if verbose, otherwise `INFO`.
+  - Changed default logging level in `_configureLogging` from `ALL` to `INFO`.
   - Refactored main logic to `_run` with verbose and loop parameters.
   - Added `_withFlag` helper to parse boolean flags.
   - Added `_parseMaxTunnels` helper to parse max tunnels option.

@@ -21,7 +21,7 @@ void _handleUncaughtError(
   Object error,
   StackTrace stackTrace,
 ) {
-  _log.severe('Tunnel UncaughtError: $error', error, stackTrace);
+  _log.severe('** Tunnel UncaughtError: $error', error, stackTrace);
 }
 
 /// Helper class to handle tunnel [Sockets].
@@ -411,7 +411,7 @@ class Tunnel {
 
       _socketA.listen((Uint8List data) {
         if (verbose) {
-          _log.info('[DATA-A] <<<${latin1.decode(data)}>>>');
+          _log.fine('[DATA-A] <<<${latin1.decode(data)}>>>');
         }
         _socketB.add(data);
         //_socketB.flush();
@@ -419,7 +419,7 @@ class Tunnel {
 
       _socketB.listen((Uint8List data) {
         if (verbose) {
-          _log.info('[DATA-B] <<<${latin1.decode(data)}>>>');
+          _log.fine('[DATA-B] <<<${latin1.decode(data)}>>>');
         }
         _socketA.add(data);
         //_socketA.flush();
@@ -438,7 +438,7 @@ class Tunnel {
   void _onSocketClose(SocketAsync socketAsync) {
     closeAsync();
     if (verbose) {
-      _log.info("Closed> $this");
+      _log.info("-- Closed: $this");
     }
   }
 

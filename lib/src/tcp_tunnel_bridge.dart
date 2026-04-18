@@ -60,7 +60,7 @@ class TunnelBridge {
     var tunnel = Tunnel.withSockets(socket1, socket2, verbose: verbose);
 
     if (verbose) {
-      _log.info('Connected> $tunnel');
+      _log.info('-- Connected: $tunnel');
     }
   }
 

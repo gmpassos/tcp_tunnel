@@ -44,7 +44,7 @@ class TunnelLocalServer {
         targetHost: targetHost,
         verbose: verbose,
       );
-      _log.info("Connected> $tunnel");
+      _log.info("-- Connected: $tunnel");
     });
 
     _log.info('** Started: $this');
