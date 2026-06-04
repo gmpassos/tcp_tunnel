@@ -31,7 +31,7 @@ void main(List<String> args) {
 bool _withFlag(List<String> args, String flag) {
   var idx = args.indexWhere((a) {
     a = a.trim().toLowerCase();
-    return a == flag || a == '--$flag' || a == '--$flag';
+    return a == flag || a == '-$flag' || a == '--$flag';
   });
 
   if (idx >= 0) {
@@ -117,10 +117,12 @@ void _run(String mode, List<String> args, bool loop, bool verbose) {
 }
 
 int _parseMaxTunnels(List<String> args, {int defaultValue = 4}) {
-  return _parseArgInt(args, [
+  var maxTunnels = _parseArgInt(args, [
     '--max-tunnels',
     '--maxtunnels',
   ], defaultValue: defaultValue);
+  // Ensure a sane lower bound so downstream `clamp` calls stay valid.
+  return maxTunnels < 1 ? 1 : maxTunnels;
 }
 
 int _parseParallels(List<String> args, int maxTunnels, {int defaultValue = 2}) {

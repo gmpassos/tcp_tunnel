@@ -1,3 +1,34 @@
+## 1.0.3
+
+- `bin/tcp_tunnel.dart`:
+  - Fixed `_withFlag` to correctly detect single-dash flags.
+  - `_parseMaxTunnels`: added lower bound check to ensure minimum value of 1.
+
+- `lib/src/tcp_tunnel_bridge.dart`:
+  - Changed `_server1` and `_server2` fields to nullable `ServerSocket?`.
+  - Added null-aware calls to `_server1?.close()` and `_server2?.close()` in `close()`.
+
+- `lib/src/tcp_tunnel_server.dart`:
+  - Changed `_server` field to nullable `ServerSocket?`.
+  - Added null-aware call to `_server?.close()` in `close()`.
+
+- `pubspec.yaml`:
+  - Updated `test` dependency from `^1.31.0` to `^1.31.1`.
+
+- `test/tcp_tunnel_test.dart`:
+  - Rewrote tests extensively:
+    - Added utility functions `freePort()`, `_wait()`.
+    - Added `RecordingServer` helper class to record socket data.
+    - Added `echoServer` helper for echoing data.
+    - Added comprehensive tests for:
+      - `TunnelLocalServer` forwarding data one and both directions.
+      - Multiple concurrent clients support.
+      - `TunnelBridge` connecting queued sockets, FIFO pairing, and close idempotency.
+      - `Tunnel.withSockets` relaying data and close notification.
+      - Full chain integration test with bridge, client tunnel, and local server.
+    - Removed old `redirectLocalPort`, `bridgePorts`, and `clientTunnel` helper functions.
+    - Improved test reliability with explicit waits and socket flushes.
+
 ## 1.0.2
 
 - `bin/tcp_tunnel.dart`:

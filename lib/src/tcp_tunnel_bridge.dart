@@ -16,8 +16,8 @@ class TunnelBridge {
 
   TunnelBridge(this.listenPort1, this.listenPort2, {this.verbose = false});
 
-  late final ServerSocket _server1;
-  late final ServerSocket _server2;
+  ServerSocket? _server1;
+  ServerSocket? _server2;
 
   bool _started = false;
 
@@ -47,8 +47,8 @@ class TunnelBridge {
 
   /// Closes the bridge.
   void close() {
-    _server1.close();
-    _server2.close();
+    _server1?.close();
+    _server2?.close();
   }
 
   void _connectTunnels() {

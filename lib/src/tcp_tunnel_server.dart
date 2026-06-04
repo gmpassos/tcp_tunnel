@@ -26,7 +26,7 @@ class TunnelLocalServer {
     this.verbose = false,
   });
 
-  late final ServerSocket _server;
+  ServerSocket? _server;
 
   bool _started = false;
 
@@ -52,7 +52,7 @@ class TunnelLocalServer {
 
   /// Closes the tunnel server.
   void close() {
-    _server.close();
+    _server?.close();
   }
 
   @override
