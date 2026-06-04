@@ -28,8 +28,10 @@ class RecordingServer {
     });
   }
 
-  static Future<RecordingServer> bind(int port, {String host = 'localhost'}) async =>
-      RecordingServer._(await ServerSocket.bind(host, port));
+  static Future<RecordingServer> bind(
+    int port, {
+    String host = 'localhost',
+  }) async => RecordingServer._(await ServerSocket.bind(host, port));
 
   /// All received bytes for the first connection, flattened.
   List<int> get firstFlat =>
@@ -664,29 +666,32 @@ void main() {
   });
 
   group('TunnelLocalServer failure', () {
-    test('drops the client connection when the target is unreachable', () async {
-      final localPort = await freePort();
-      final deadTarget = await freePort(); // nothing listening
-      final server = TunnelLocalServer(localPort, deadTarget);
-      await server.start();
+    test(
+      'drops the client connection when the target is unreachable',
+      () async {
+        final localPort = await freePort();
+        final deadTarget = await freePort(); // nothing listening
+        final server = TunnelLocalServer(localPort, deadTarget);
+        await server.start();
 
-      final socket = await Socket.connect('localhost', localPort);
-      final done = Completer<void>();
-      socket.listen(
-        (_) {},
-        onError: (_) {
-          if (!done.isCompleted) done.complete();
-        },
-        onDone: () {
-          if (!done.isCompleted) done.complete();
-        },
-      );
+        final socket = await Socket.connect('localhost', localPort);
+        final done = Completer<void>();
+        socket.listen(
+          (_) {},
+          onError: (_) {
+            if (!done.isCompleted) done.complete();
+          },
+          onDone: () {
+            if (!done.isCompleted) done.complete();
+          },
+        );
 
-      await done.future.timeout(Duration(seconds: 5));
-      expect(done.isCompleted, isTrue);
+        await done.future.timeout(Duration(seconds: 5));
+        expect(done.isCompleted, isTrue);
 
-      server.close();
-    });
+        server.close();
+      },
+    );
   });
 
   group('Callbacks and options', () {
