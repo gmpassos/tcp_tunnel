@@ -38,13 +38,16 @@ class TunnelLocalServer {
     final server = _server = await ServerSocket.bind('0.0.0.0', listenPort);
 
     server.listen((Socket socket) {
-      var tunnel = Tunnel.targetPort(
+      Tunnel.targetPort(
         socket,
         targetPort,
         targetHost: targetHost,
         verbose: verbose,
-      );
-      _log.info("-- Connected: $tunnel");
+      ).then((tunnel) {
+        if (tunnel != null) {
+          _log.info("-- Connected: $tunnel");
+        }
+      });
     });
 
     _log.info('** Started: $this');

@@ -323,4 +323,176 @@ void main() {
       await echo.close();
     });
   });
+
+  group('Connection failures', () {
+    test('connect fires onClose when remote is unreachable', () async {
+      final deadRemote =
+          await freePort(); // bound then released: nothing listening
+      final target = await freePort();
+
+      final closed = Completer<void>();
+      Tunnel.connect(
+        'localhost',
+        deadRemote,
+        target,
+        onClose: (_) {
+          if (!closed.isCompleted) closed.complete();
+        },
+      );
+
+      await closed.future.timeout(Duration(seconds: 5));
+      expect(closed.isCompleted, isTrue);
+    });
+
+    test('connectAsync fires onClose when target is unreachable', () async {
+      // A remote that immediately sends data, triggering the lazy target connect.
+      final remotePort = await freePort();
+      final remote = await ServerSocket.bind('localhost', remotePort);
+      remote.listen((s) => s.add([1, 2, 3]));
+
+      final deadTarget = await freePort(); // nothing listening
+
+      final closed = Completer<void>();
+      Tunnel.connectAsync(
+        'localhost',
+        remotePort,
+        deadTarget,
+        onClose: (_) {
+          if (!closed.isCompleted) closed.complete();
+        },
+      );
+
+      await closed.future.timeout(Duration(seconds: 5));
+      expect(closed.isCompleted, isTrue);
+
+      await remote.close();
+    });
+  });
+
+  group('Lazy connect (connectAsync)', () {
+    test('connects target only after first remote data arrives', () async {
+      final remotePort = await freePort();
+      final remote = await ServerSocket.bind('localhost', remotePort);
+      Socket? remoteSide;
+      remote.listen((s) => remoteSide = s);
+
+      var targetConnections = 0;
+      final targetPort = await freePort();
+      final target = await ServerSocket.bind('localhost', targetPort);
+      target.listen((_) => targetConnections++);
+
+      final tunnel = Tunnel.connectAsync('localhost', remotePort, targetPort);
+      await _wait(100);
+
+      expect(
+        targetConnections,
+        equals(0),
+        reason: 'target must not be connected before any remote data',
+      );
+
+      remoteSide!.add([1, 2, 3]);
+      await remoteSide!.flush();
+      await _wait(100);
+
+      expect(
+        targetConnections,
+        equals(1),
+        reason: 'target connects after the first remote data',
+      );
+
+      tunnel.close();
+      await remote.close();
+      await target.close();
+    });
+  });
+
+  group('Backpressure', () {
+    test('transfers a large payload intact through a tunnel', () async {
+      final echoPort = await freePort();
+      final echo = await echoServer(echoPort);
+
+      final localPort = await freePort();
+      final tunnel = TunnelLocalServer(localPort, echoPort);
+      await tunnel.start();
+
+      const size = 4 * 1024 * 1024; // 4 MiB, well past socket buffers.
+      final payload = Uint8List(size);
+      for (var i = 0; i < size; i++) {
+        payload[i] = i & 0xFF;
+      }
+
+      var received = 0;
+      var corrupted = false;
+      final done = Completer<void>();
+
+      final socket = await Socket.connect('localhost', localPort);
+      socket.listen((d) {
+        for (var i = 0; i < d.length; i++) {
+          if (d[i] != ((received + i) & 0xFF)) corrupted = true;
+        }
+        received += d.length;
+        if (received >= size && !done.isCompleted) done.complete();
+      });
+
+      socket.add(payload);
+      await socket.flush();
+      await done.future.timeout(Duration(seconds: 30));
+
+      expect(received, equals(size));
+      expect(corrupted, isFalse, reason: 'payload must arrive byte-for-byte');
+
+      await socket.close();
+      tunnel.close();
+      await echo.close();
+    });
+  });
+
+  group('TunnelBridge eviction', () {
+    test('a queued socket that closes before pairing is not paired', () async {
+      final port1 = await freePort();
+      final port2 = await freePort();
+      final bridge = TunnelBridge(port1, port2);
+      await bridge.start();
+
+      // A connection on side 1 with no peer yet, then closed while queued.
+      final dead = await Socket.connect('localhost', port1);
+      await _wait();
+      await dead.close();
+      // Wait past the SocketAsync close delay so the dead socket is evicted.
+      await _wait(1300);
+
+      // A fresh live pair: 'a' must pair with 'b', not the evicted dead socket.
+      final a = await Socket.connect('localhost', port1);
+      final b = await Socket.connect('localhost', port2);
+      final bReceived = <int>[];
+      b.listen(bReceived.addAll);
+      await _wait();
+
+      a.add([42]);
+      await a.flush();
+      await _wait();
+
+      expect(
+        bReceived,
+        equals([42]),
+        reason: 'live socket must pair with the live peer, not a dead one',
+      );
+
+      await a.close();
+      await b.close();
+      bridge.close();
+    });
+  });
+
+  group('CLI', () {
+    test('prints usage and exits 0 with no args', () async {
+      final result = await Process.run('dart', [
+        'run',
+        'bin/tcp_tunnel.dart',
+      ]).timeout(Duration(seconds: 60));
+
+      expect(result.exitCode, equals(0));
+      expect(result.stdout.toString(), contains('USAGE'));
+    });
+  });
 }
