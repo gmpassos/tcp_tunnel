@@ -55,6 +55,14 @@
       - Backpressure: large payload (4 MiB) transferred byte-for-byte.
       - `TunnelBridge` eviction of a queued socket closed before pairing.
       - CLI usage smoke test.
+      - `connectAsync` forwarding the first (triggering) data to the target and
+        bidirectional round-trip with `onReady` completing.
+      - `TunnelBridge` buffering data sent while a socket is queued, isolating
+        many concurrent pairs, and tearing down a peer when one side closes.
+      - `TunnelLocalServer` dropping the client when the target is unreachable.
+      - `onStart` callback, `verbose` data path, and custom `targetHost`.
+      - Edge cases: half-close drain, zero-length writes, reverse-direction
+        relay, large bidirectional transfer, and `SocketAsync` state getters.
     - Removed old `redirectLocalPort`, `bridgePorts`, and `clientTunnel` helper functions.
     - Improved test reliability with explicit waits and socket flushes.
 
