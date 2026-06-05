@@ -318,6 +318,56 @@ void main() {
       await echo.close();
     });
 
+    test('server agent learns its public port from the hub', () async {
+      final echo = await EchoServer.bind();
+      final controlPort = await freePort();
+      final publicPort = await freePort();
+
+      final hub = TunnelHub(controlPort, servicePorts: {'svc': publicPort});
+      await hub.start();
+
+      final agent = TunnelServerAgent(
+        'localhost',
+        controlPort,
+        'svc',
+        echo.port,
+        poolSize: 2,
+      );
+      await agent.start();
+
+      expect(await waitFor(() => agent.publicPort == publicPort), isTrue);
+
+      agent.close();
+      hub.close();
+      await echo.close();
+    });
+
+    test('server agent reports null public port in local port mode', () async {
+      final echo = await EchoServer.bind();
+      final controlPort = await freePort();
+
+      // No public port for "svc" (local port mode only).
+      final hub = TunnelHub(controlPort);
+      await hub.start();
+
+      final agent = TunnelServerAgent(
+        'localhost',
+        controlPort,
+        'svc',
+        echo.port,
+        poolSize: 1,
+      );
+      await agent.start();
+
+      // Wait until a welcome has surely arrived, then assert it stays null.
+      await _wait(200);
+      expect(agent.publicPort, isNull);
+
+      agent.close();
+      hub.close();
+      await echo.close();
+    });
+
     test('PortRange.parse handles single port and start-end', () {
       expect(PortRange.parse('20000-20100').toString(), '20000-20100');
       final single = PortRange.parse('20000');

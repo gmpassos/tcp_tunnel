@@ -48,6 +48,9 @@ class _ParkedServer {
 
   bool taken = false;
 
+  /// Whether a [FrameType.welcome] (public port info) was already sent.
+  bool welcomed = false;
+
   _ParkedServer(this.conn);
 
   bool get isClosed => conn.isClosed;
@@ -239,8 +242,28 @@ class TunnelHub {
     }
 
     _ensureDynamicPublicPort(service);
+    _maybeWelcome(parked, service);
     _keepParked(parked);
     _pair(reg);
+  }
+
+  /// Tells a parked server conn its service's public port, once known.
+  ///
+  /// Sent immediately when the port is already bound, or when no public port
+  /// will ever be assigned (local port mode only). When a dynamic port is still
+  /// being allocated, [_openPublicPort] sends it after the bind completes.
+  void _maybeWelcome(_ParkedServer parked, String service) {
+    if (parked.welcomed) return;
+
+    final port = _boundPorts[service];
+    if (port != null) {
+      parked.welcomed = true;
+      parked.conn.writeFrame(Frame.welcome(publicPort: port));
+    } else if (!dynamicPublicPorts && !_allocatingDynamic.contains(service)) {
+      // No public port now and none coming: local port mode only.
+      parked.welcomed = true;
+      parked.conn.writeFrame(Frame.welcome());
+    }
   }
 
   /// Binds a dynamically allocated public port for [service] on first
@@ -292,6 +315,17 @@ class TunnelHub {
       '** Public port ${server.port}${dynamic ? ' (dynamic)' : ''} '
       '-> service "$service"',
     );
+
+    // Inform any server conns that registered before the port was bound.
+    final reg = _registries[service];
+    if (reg != null) {
+      for (final parked in reg.parked) {
+        if (!parked.welcomed) {
+          parked.welcomed = true;
+          parked.conn.writeFrame(Frame.welcome(publicPort: server.port));
+        }
+      }
+    }
     return true;
   }
 

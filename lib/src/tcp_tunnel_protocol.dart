@@ -31,7 +31,13 @@ enum FrameType {
   /// framed message on the connection: everything after it is raw payload. The
   /// barrier lets the hub discard any keepalive frames still in flight before
   /// switching the connection to raw piping.
-  ready(5);
+  ready(5),
+
+  /// Hub → server agent, sent once after a server HELLO, informing the public
+  /// port currently mapped to the service (public port mode). Payload:
+  /// `{publicPort: <port>}`, or empty when the service has no public port
+  /// (local port mode only).
+  welcome(6);
 
   final int code;
 
@@ -61,11 +67,19 @@ class Frame {
   /// `peer` field of a [FrameType.activate] frame.
   String? get peer => payload['peer'] as String?;
 
+  /// `publicPort` field of a [FrameType.welcome] frame (null = no public port).
+  int? get publicPort => payload['publicPort'] as int?;
+
   factory Frame.hello({required String role, required String service}) =>
       Frame(FrameType.hello, {'role': role, 'service': service});
 
   factory Frame.activate({String? peer}) =>
       Frame(FrameType.activate, peer != null ? {'peer': peer} : const {});
+
+  factory Frame.welcome({int? publicPort}) => Frame(
+    FrameType.welcome,
+    publicPort != null ? {'publicPort': publicPort} : const {},
+  );
 
   static const Frame pingFrame = Frame(FrameType.ping);
   static const Frame pongFrame = Frame(FrameType.pong);

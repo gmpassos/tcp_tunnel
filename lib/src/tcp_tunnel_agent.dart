@@ -55,6 +55,14 @@ class TunnelServerAgent {
   /// Number of in-flight + parked connections counting toward [poolSize].
   int _liveCount = 0;
 
+  bool _publicPortKnown = false;
+  int? _publicPort;
+
+  /// The public port the hub currently maps to [service] (public port mode), or
+  /// `null` if unknown yet or the service has no public port (local port mode
+  /// only). Reported by the hub shortly after the agent connects.
+  int? get publicPort => _publicPort;
+
   final Set<FramedConnection> _parked = {};
 
   /// Starts the agent and fills the parked-connection pool.
@@ -134,7 +142,32 @@ class TunnelServerAgent {
         await _activate(conn, frame.peer);
         return;
       }
+
+      if (frame.type == FrameType.welcome) {
+        _onWelcome(frame.publicPort);
+      }
       // PONG and anything else: ignore while parked.
+    }
+  }
+
+  /// Reports the public port the hub mapped to [service], logging once (and
+  /// again only if it changes).
+  void _onWelcome(int? port) {
+    if (_publicPortKnown && _publicPort == port) return;
+    _publicPortKnown = true;
+    _publicPort = port;
+
+    if (port != null) {
+      _log.info(
+        '-- Service "$service" is publicly mapped at $hubHost:$port '
+        '(public port mode)',
+      );
+    } else {
+      _log.info(
+        '-- Service "$service" has no public port (local port mode only): '
+        'tcp_tunnel connect --hub $hubHost:$hubPort --service $service '
+        '--listen <localPort>',
+      );
     }
   }
 

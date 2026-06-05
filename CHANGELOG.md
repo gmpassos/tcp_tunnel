@@ -13,6 +13,9 @@
     uses the hub purely as a rendezvous (no public per-service port needed).
 - Every CLI command prints a "How to use" block on startup explaining how to
   publish to / consume from it (the hub block lists allocated public ports).
+- The hub now tells each connecting server agent its service's public port (a
+  `WELCOME` control frame); `publish` logs where the service is publicly mapped
+  (or that it is local port mode only). Exposed as `TunnelServerAgent.publicPort`.
 - New library APIs:
   - `lib/src/tcp_tunnel_protocol.dart`: length-prefixed control frames
     (`HELLO`/`ACTIVATE`/`PING`/`PONG`/`READY`), `encodeFrame`/`decodeFrame`, and

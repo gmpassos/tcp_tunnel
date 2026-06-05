@@ -386,7 +386,7 @@ void _printPublishUsage(_HostPort hub, String service, _HostPort target) {
         'via hub ${hub.host}:${hub.port}.',
     'Consumers can reach it:',
     '  - Public port mode: connect to the hub\'s public port mapped to '
-        '"$service".',
+        '"$service" (reported below once the hub confirms it).',
     '  - Local port mode:  tcp_tunnel connect --hub ${hub.host}:${hub.port} '
         '--service $service --listen <localPort>',
   ]);
