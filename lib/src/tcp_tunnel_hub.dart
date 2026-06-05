@@ -66,6 +66,12 @@ class TunnelHub {
   /// connect straight to these ports.
   final Map<String, int> servicePorts;
 
+  /// When `true`, any published service that has no public port yet is
+  /// automatically given a dynamically allocated (ephemeral) public port the
+  /// first time a server agent registers it. The chosen port is logged and
+  /// recorded in [boundPorts].
+  final bool dynamicPublicPorts;
+
   /// How long a waiting client is held before being closed when no parked
   /// server connection is available (service offline / pool exhausted).
   final Duration clientWaitTimeout;
@@ -79,6 +85,7 @@ class TunnelHub {
   TunnelHub(
     this.controlPort, {
     Map<String, int>? servicePorts,
+    this.dynamicPublicPorts = false,
     this.clientWaitTimeout = const Duration(seconds: 10),
     this.parkedIdleTimeout = const Duration(seconds: 60),
     this.verbose = false,
@@ -89,12 +96,28 @@ class TunnelHub {
   ServerSocket? _controlServer;
   final List<ServerSocket> _publicServers = [];
 
+  /// Public port mode: service name → the port actually bound. Differs from
+  /// [servicePorts] when a service requested a dynamic port (`0`), which the OS
+  /// resolves to a concrete ephemeral port at [start].
+  final Map<String, int> _boundPorts = {};
+
+  /// Services whose dynamic public port is currently being bound, to avoid
+  /// allocating twice when multiple agents register the same service at once.
+  final Set<String> _allocatingDynamic = {};
+
+  /// Resolved public port for each service (after [start]). A dynamically
+  /// allocated port (requested as `0`) appears here as its concrete value.
+  Map<String, int> get boundPorts => Map.unmodifiable(_boundPorts);
+
   bool _started = false;
 
   _ServiceRegistry _registry(String service) =>
       _registries.putIfAbsent(service, () => _ServiceRegistry(service));
 
   /// Starts the hub: binds the control port and every configured public port.
+  ///
+  /// A service mapped to port `0` is bound to a dynamically allocated ephemeral
+  /// port; the resolved value is recorded in [boundPorts].
   Future<void> start() async {
     if (_started) return;
     _started = true;
@@ -111,7 +134,11 @@ class TunnelHub {
       final server = await ServerSocket.bind('0.0.0.0', port);
       server.listen((socket) => _onPublicSocket(service, socket));
       _publicServers.add(server);
-      _log.info('** Public port $port -> service "$service"');
+      _boundPorts[service] = server.port;
+      final dynamicNote = port == 0 ? ' (dynamic)' : '';
+      _log.info(
+        '** Public port ${server.port}$dynamicNote -> service "$service"',
+      );
     }
 
     _log.info('** Started: $this');
@@ -175,8 +202,37 @@ class TunnelHub {
       );
     }
 
+    _ensureDynamicPublicPort(service);
     _keepParked(parked);
     _pair(reg);
+  }
+
+  /// Binds a dynamically allocated public port for [service] on first
+  /// registration when [dynamicPublicPorts] is enabled and it has none yet.
+  void _ensureDynamicPublicPort(String service) {
+    if (!dynamicPublicPorts) return;
+    if (_boundPorts.containsKey(service)) return;
+    if (!_allocatingDynamic.add(service)) return; // already allocating
+
+    ServerSocket.bind('0.0.0.0', 0).then(
+      (server) {
+        _allocatingDynamic.remove(service);
+        server.listen((socket) => _onPublicSocket(service, socket));
+        _publicServers.add(server);
+        _boundPorts[service] = server.port;
+        _log.info(
+          '** Public port ${server.port} (dynamic) -> service "$service"',
+        );
+      },
+      onError: (e, s) {
+        _allocatingDynamic.remove(service);
+        _log.warning(
+          '** Failed to allocate dynamic public port for "$service": $e',
+          e,
+          s,
+        );
+      },
+    );
   }
 
   /// Reads keepalive frames from a parked conn until it is taken or closes.

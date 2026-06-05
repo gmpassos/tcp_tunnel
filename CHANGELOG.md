@@ -4,9 +4,13 @@
   from private LANs (NAT-friendly on both ends) to remote consumers, using a
   pre-warmed pool of parked connections. Two consumer modes share the same hub:
   - **Mode 1 — public port mode:** the hub binds a public TCP port per service
-    (`--map svc=port`); plain TCP clients connect directly.
+    (`--map svc=port`); plain TCP clients connect directly. The port may be
+    dynamically allocated with `--map svc=.` (per service) or `--map-dynamic`
+    (auto-allocate a port for any published service); the chosen port is logged.
   - **Mode 2 — local port mode:** a client agent opens a local listen port and
     uses the hub purely as a rendezvous (no public per-service port needed).
+- Every CLI command prints a "How to use" block on startup explaining how to
+  publish to / consume from it (the hub block lists allocated public ports).
 - New library APIs:
   - `lib/src/tcp_tunnel_protocol.dart`: length-prefixed control frames
     (`HELLO`/`ACTIVATE`/`PING`/`PONG`/`READY`), `encodeFrame`/`decodeFrame`, and

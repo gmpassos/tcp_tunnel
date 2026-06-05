@@ -225,6 +225,73 @@ void main() {
       },
     );
 
+    test('public port mode: dynamic port (servicePorts=0) is allocated and '
+        'round-trips', () async {
+      final echo = await EchoServer.bind();
+      final controlPort = await freePort();
+
+      // Port 0 => OS-allocated ephemeral public port.
+      final hub = TunnelHub(controlPort, servicePorts: {'svc': 0});
+      await hub.start();
+
+      final publicPort = hub.boundPorts['svc']!;
+      expect(publicPort, greaterThan(0));
+
+      final agent = TunnelServerAgent(
+        'localhost',
+        controlPort,
+        'svc',
+        echo.port,
+        poolSize: 2,
+      );
+      await agent.start();
+      await _wait(150);
+
+      final client = await TestClient.connect(publicPort);
+      client.send('ping-dyn');
+      expect(await waitFor(() => client.text == 'ping-dyn'), isTrue);
+
+      await client.close();
+      agent.close();
+      hub.close();
+      await echo.close();
+    });
+
+    test('--map-dynamic: any published service gets a public port', () async {
+      final echo = await EchoServer.bind();
+      final controlPort = await freePort();
+
+      final hub = TunnelHub(controlPort, dynamicPublicPorts: true);
+      await hub.start();
+
+      // No public port for "anysvc" until an agent publishes it.
+      expect(hub.boundPorts, isEmpty);
+
+      final agent = TunnelServerAgent(
+        'localhost',
+        controlPort,
+        'anysvc',
+        echo.port,
+        poolSize: 2,
+      );
+      await agent.start();
+
+      // The hub auto-allocates a public port on first registration.
+      expect(await waitFor(() => hub.boundPorts.containsKey('anysvc')), isTrue);
+      final publicPort = hub.boundPorts['anysvc']!;
+      expect(publicPort, greaterThan(0));
+
+      await _wait(100);
+      final client = await TestClient.connect(publicPort);
+      client.send('ping-anysvc');
+      expect(await waitFor(() => client.text == 'ping-anysvc'), isTrue);
+
+      await client.close();
+      agent.close();
+      hub.close();
+      await echo.close();
+    });
+
     test('local port mode: client agent local port round-trips', () async {
       final echo = await EchoServer.bind();
       final controlPort = await freePort();

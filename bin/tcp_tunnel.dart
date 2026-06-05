@@ -17,6 +17,10 @@ void main(List<String> args) {
     print(
       '  \$> tcp_tunnel hub --control-port 7000 --map mysql=13306 --map redis=16379',
     );
+    print('       --map svc=.   (dynamic public port for one service)');
+    print(
+      '       --map-dynamic (dynamic public port for any published service)',
+    );
     print(
       '  \$> tcp_tunnel publish --hub %host:%port --service mysql --target 127.0.0.1:3306 --pool 4',
     );
@@ -110,6 +114,11 @@ void _run(String mode, List<String> args, bool loop, bool verbose) {
     );
     _shutdownActions.add(localServer.close);
     localServer.start();
+    _printHowToUse('local', [
+      'Forwards local port $listenPort to $targetHost:$targetPort.',
+      'Point your client at this machine, e.g.:',
+      '  <your-client> --host localhost --port $listenPort',
+    ]);
   } else if (mode == 'client') {
     var remoteHost = args[0];
     var remotePort = int.parse(args[1]);
@@ -142,6 +151,12 @@ void _run(String mode, List<String> args, bool loop, bool verbose) {
         verbose,
       );
     }
+    _printHowToUse('client', [
+      'Connects to $remoteHost:$remotePort and forwards traffic to '
+          'localhost:$localTargetPort.',
+      'Pair this with a "bridge" running on $remoteHost: a connection to the '
+          'bridge\'s other port reaches localhost:$localTargetPort here.',
+    ]);
   } else if (mode == 'bridge') {
     var listenPort1 = int.parse(args[0]);
     var listenPort2 = int.parse(args[1]);
@@ -153,25 +168,36 @@ void _run(String mode, List<String> args, bool loop, bool verbose) {
     var bridge = TunnelBridge(listenPort1, listenPort2, verbose: verbose);
     _shutdownActions.add(bridge.close);
     bridge.start();
+    _printHowToUse('bridge', [
+      'Pairs connections accepted on port $listenPort1 with connections '
+          'accepted on port $listenPort2 (FIFO), piping them together.',
+      'Typical use: a "client" tunnel connects to one port while consumers '
+          'connect to the other.',
+    ]);
   } else if (mode == 'hub') {
     var controlPort = _parseArgInt(args, [
       '--control-port',
       '--controlport',
       '--port',
     ], defaultValue: 7000);
+    var dynamicMap = _withFlag(args, 'map-dynamic');
     var servicePorts = _parseMaps(args);
 
     print('-- Control port: $controlPort');
     print('-- Service ports: $servicePorts');
+    print('-- Dynamic services (--map-dynamic): $dynamicMap');
     print('-- Verbose: $verbose');
 
     var hub = TunnelHub(
       controlPort,
       servicePorts: servicePorts,
+      dynamicPublicPorts: dynamicMap,
       verbose: verbose,
     );
     _shutdownActions.add(hub.close);
-    hub.start();
+    hub.start().then(
+      (_) => _printHubUsage(controlPort, hub.boundPorts, dynamic: dynamicMap),
+    );
   } else if (mode == 'publish') {
     var hub = _parseHostPort(args, '--hub');
     var service = _parseArgStr(args, ['--service'], required: true)!;
@@ -196,6 +222,7 @@ void _run(String mode, List<String> args, bool loop, bool verbose) {
     );
     _shutdownActions.add(agent.close);
     agent.start();
+    _printPublishUsage(hub, service, target);
   } else if (mode == 'connect') {
     var hub = _parseHostPort(args, '--hub');
     var service = _parseArgStr(args, ['--service'], required: true)!;
@@ -218,6 +245,7 @@ void _run(String mode, List<String> args, bool loop, bool verbose) {
     );
     _shutdownActions.add(agent.close);
     agent.start();
+    _printConnectUsage(hub, service, listenPort);
   } else {
     print('** Unknown mode: $mode');
     exit(1);
@@ -247,6 +275,9 @@ _HostPort _parseHostPort(List<String> args, String flag) {
 }
 
 /// Parses repeatable `--map service=port` flags into a map.
+///
+/// A port of `.` means dynamic allocation: it maps to `0`, which the hub binds
+/// to an ephemeral port chosen by the OS (reported on startup).
 Map<String, int> _parseMaps(List<String> args) {
   var map = <String, int>{};
   for (var i = 0; i < args.length - 1; i++) {
@@ -255,18 +286,89 @@ Map<String, int> _parseMaps(List<String> args) {
       var eq = spec.indexOf('=');
       if (eq <= 0 || eq == spec.length - 1) {
         throw ArgumentError(
-          'Invalid --map value "$spec", expected service=port',
+          'Invalid --map value "$spec", expected service=port (or service=.)',
         );
       }
       var service = spec.substring(0, eq);
-      var port = int.tryParse(spec.substring(eq + 1));
-      if (port == null) {
-        throw ArgumentError('Invalid port in --map value "$spec"');
+      var portStr = spec.substring(eq + 1);
+      int port;
+      if (portStr == '.') {
+        port = 0; // dynamic allocation
+      } else {
+        var parsed = int.tryParse(portStr);
+        if (parsed == null) {
+          throw ArgumentError('Invalid port in --map value "$spec"');
+        }
+        port = parsed;
       }
       map[service] = port;
     }
   }
   return map;
+}
+
+/// Prints a "How to use" block for [mode].
+void _printHowToUse(String mode, List<String> lines) {
+  print('');
+  print('== How to use ($mode) ==');
+  for (var line in lines) {
+    print(line.isEmpty ? '' : '  $line');
+  }
+  print('');
+}
+
+void _printHubUsage(
+  int controlPort,
+  Map<String, int> boundPorts, {
+  bool dynamic = false,
+}) {
+  var lines = <String>[
+    'Hub control port: $controlPort (server and client agents dial in here).',
+    '',
+    'Publish a service (run inside the private LAN where the service runs):',
+    '  tcp_tunnel publish --hub <this-host>:$controlPort '
+        '--service <name> --target <host:port>',
+    '',
+    'Consume a service:',
+    '  - Public port mode: connect directly to a public port listed below.',
+    '  - Local port mode:  tcp_tunnel connect --hub <this-host>:$controlPort '
+        '--service <name> --listen <localPort>',
+  ];
+  if (boundPorts.isNotEmpty) {
+    lines.add('');
+    lines.add('Public ports (public port mode):');
+    boundPorts.forEach((service, port) => lines.add('  $service -> $port'));
+  }
+  if (dynamic) {
+    lines.add('');
+    lines.add(
+      '--map-dynamic is ON: any published service is auto-assigned a '
+      'public port (watch the log for the chosen port).',
+    );
+  }
+  _printHowToUse('hub', lines);
+}
+
+void _printPublishUsage(_HostPort hub, String service, _HostPort target) {
+  _printHowToUse('publish', [
+    'Publishing "$service" (-> ${target.host}:${target.port}) '
+        'via hub ${hub.host}:${hub.port}.',
+    'Consumers can reach it:',
+    '  - Public port mode: connect to the hub\'s public port mapped to '
+        '"$service".',
+    '  - Local port mode:  tcp_tunnel connect --hub ${hub.host}:${hub.port} '
+        '--service $service --listen <localPort>',
+  ]);
+}
+
+void _printConnectUsage(_HostPort hub, String service, int listenPort) {
+  _printHowToUse('connect', [
+    'Service "$service" (via hub ${hub.host}:${hub.port}) is now available '
+        'locally at:',
+    '  localhost:$listenPort',
+    'Point your client there, e.g.:',
+    '  <your-client> --host localhost --port $listenPort',
+  ]);
 }
 
 String? _parseArgStr(

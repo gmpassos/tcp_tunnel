@@ -201,6 +201,20 @@ tcp_tunnel publish --hub hub.domain:7000 --service mysql --target 127.0.0.1:3306
 mysql -u myuser -p -h hub.domain -P 13306
 ```
 
+The public port can also be **dynamically allocated** by the OS instead of fixed:
+
+```shell
+# Dynamic port for a single named service (the chosen port is logged on startup):
+tcp_tunnel hub --control-port 7000 --map mysql=.
+
+# Dynamic port for ANY published service (each service gets a port the first
+# time a `publish` agent registers it; the chosen port is logged):
+tcp_tunnel hub --control-port 7000 --map-dynamic
+```
+
+Every command prints a short **"How to use"** block on startup describing how to
+publish to / consume from it, including any allocated public ports.
+
 ### Mode 2 — Local port mode
 
 The consumer runs a **client agent** that opens a local listen port and uses the
