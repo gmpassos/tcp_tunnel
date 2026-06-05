@@ -13,6 +13,16 @@ void main(List<String> args) {
       '  \$> tcp_tunnel client %remoteHost %remotePort %localTargetPort loop --max-tunnels 4',
     );
     print('  \$> tcp_tunnel bridge %listenPort1 %listenPort2\n');
+    print('  Hub mode:');
+    print(
+      '  \$> tcp_tunnel hub --control-port 7000 --map mysql=13306 --map redis=16379',
+    );
+    print(
+      '  \$> tcp_tunnel publish --hub %host:%port --service mysql --target 127.0.0.1:3306 --pool 4',
+    );
+    print(
+      '  \$> tcp_tunnel connect --hub %host:%port --service mysql --listen 3306\n',
+    );
     exit(0);
   }
 
@@ -143,10 +153,140 @@ void _run(String mode, List<String> args, bool loop, bool verbose) {
     var bridge = TunnelBridge(listenPort1, listenPort2, verbose: verbose);
     _shutdownActions.add(bridge.close);
     bridge.start();
+  } else if (mode == 'hub') {
+    var controlPort = _parseArgInt(args, [
+      '--control-port',
+      '--controlport',
+      '--port',
+    ], defaultValue: 7000);
+    var servicePorts = _parseMaps(args);
+
+    print('-- Control port: $controlPort');
+    print('-- Service ports: $servicePorts');
+    print('-- Verbose: $verbose');
+
+    var hub = TunnelHub(
+      controlPort,
+      servicePorts: servicePorts,
+      verbose: verbose,
+    );
+    _shutdownActions.add(hub.close);
+    hub.start();
+  } else if (mode == 'publish') {
+    var hub = _parseHostPort(args, '--hub');
+    var service = _parseArgStr(args, ['--service'], required: true)!;
+    var target = _parseHostPort(args, '--target');
+    var pool = _parseArgInt(args, ['--pool'], defaultValue: 4);
+    if (pool < 1) pool = 1;
+
+    print('-- Hub: ${hub.host}:${hub.port}');
+    print('-- Service: $service');
+    print('-- Target: ${target.host}:${target.port}');
+    print('-- Pool: $pool');
+    print('-- Verbose: $verbose');
+
+    var agent = TunnelServerAgent(
+      hub.host,
+      hub.port,
+      service,
+      target.port,
+      targetHost: target.host,
+      poolSize: pool,
+      verbose: verbose,
+    );
+    _shutdownActions.add(agent.close);
+    agent.start();
+  } else if (mode == 'connect') {
+    var hub = _parseHostPort(args, '--hub');
+    var service = _parseArgStr(args, ['--service'], required: true)!;
+    var listenPort = _parseArgInt(args, ['--listen'], defaultValue: -1);
+    if (listenPort < 0) {
+      throw ArgumentError('Missing --listen <port>');
+    }
+
+    print('-- Hub: ${hub.host}:${hub.port}');
+    print('-- Service: $service');
+    print('-- Listen port: $listenPort');
+    print('-- Verbose: $verbose');
+
+    var agent = TunnelClientAgent(
+      hub.host,
+      hub.port,
+      service,
+      listenPort,
+      verbose: verbose,
+    );
+    _shutdownActions.add(agent.close);
+    agent.start();
   } else {
     print('** Unknown mode: $mode');
     exit(1);
   }
+}
+
+/// A parsed `host:port` pair.
+class _HostPort {
+  final String host;
+  final int port;
+  _HostPort(this.host, this.port);
+}
+
+/// Parses a required `--flag host:port` argument.
+_HostPort _parseHostPort(List<String> args, String flag) {
+  var value = _parseArgStr(args, [flag], required: true)!;
+  var idx = value.lastIndexOf(':');
+  if (idx <= 0 || idx == value.length - 1) {
+    throw ArgumentError('Invalid $flag value "$value", expected host:port');
+  }
+  var host = value.substring(0, idx);
+  var port = int.tryParse(value.substring(idx + 1));
+  if (port == null) {
+    throw ArgumentError('Invalid port in $flag value "$value"');
+  }
+  return _HostPort(host, port);
+}
+
+/// Parses repeatable `--map service=port` flags into a map.
+Map<String, int> _parseMaps(List<String> args) {
+  var map = <String, int>{};
+  for (var i = 0; i < args.length - 1; i++) {
+    if (args[i].toLowerCase() == '--map') {
+      var spec = args[i + 1];
+      var eq = spec.indexOf('=');
+      if (eq <= 0 || eq == spec.length - 1) {
+        throw ArgumentError(
+          'Invalid --map value "$spec", expected service=port',
+        );
+      }
+      var service = spec.substring(0, eq);
+      var port = int.tryParse(spec.substring(eq + 1));
+      if (port == null) {
+        throw ArgumentError('Invalid port in --map value "$spec"');
+      }
+      map[service] = port;
+    }
+  }
+  return map;
+}
+
+String? _parseArgStr(
+  List<String> args,
+  List<String> names, {
+  bool required = false,
+  String? defaultValue,
+}) {
+  for (var i = 0; i < args.length; i++) {
+    if (names.contains(args[i].toLowerCase())) {
+      if (i + 1 >= args.length) {
+        throw ArgumentError('Missing value for ${args[i]}');
+      }
+      return args[i + 1];
+    }
+  }
+  if (required) {
+    throw ArgumentError('Missing required argument ${names.first}');
+  }
+  return defaultValue;
 }
 
 int _parseMaxTunnels(List<String> args, {int defaultValue = 4}) {
