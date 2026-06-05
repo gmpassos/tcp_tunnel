@@ -220,6 +220,22 @@ the firewall). It applies to both `--map svc=.` and `--map-dynamic`:
 tcp_tunnel hub --control-port 7000 --map-dynamic --port-range 20000-20100
 ```
 
+A `publish` agent can also request a public port directly (default off), without
+configuring anything on the hub:
+
+```shell
+# Fixed public port:
+tcp_tunnel publish --hub hub.domain:7000 --service mysql --target 127.0.0.1:3306 --public-port 13306
+
+# Dynamically allocated public port (honors the hub's --port-range):
+tcp_tunnel publish --hub hub.domain:7000 --service mysql --target 127.0.0.1:3306 --public-port any
+#   --public  is an alias for  --public-port any
+```
+
+The actual public port is reported by `publish` once the hub confirms it. If the
+requested port is already in use (by another service or process) or cannot be
+allocated, `publish` exits with a non-zero status and prints the reason.
+
 Every command prints a short **"How to use"** block on startup describing how to
 publish to / consume from it, including any allocated public ports.
 

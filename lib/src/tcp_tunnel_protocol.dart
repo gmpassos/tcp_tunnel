@@ -37,7 +37,12 @@ enum FrameType {
   /// port currently mapped to the service (public port mode). Payload:
   /// `{publicPort: <port>}`, or empty when the service has no public port
   /// (local port mode only).
-  welcome(6);
+  welcome(6),
+
+  /// Hub → server agent, rejecting the registration with a reason. Sent when a
+  /// requested public port cannot be provided (already in use, or the OS/range
+  /// cannot allocate one). Payload: `{reason: "..."}`.
+  reject(7);
 
   final int code;
 
@@ -67,11 +72,26 @@ class Frame {
   /// `peer` field of a [FrameType.activate] frame.
   String? get peer => payload['peer'] as String?;
 
-  /// `publicPort` field of a [FrameType.welcome] frame (null = no public port).
+  /// `publicPort` field. On a [FrameType.welcome] frame it is the port the hub
+  /// mapped (null = none). On a server [FrameType.hello] it is the agent's
+  /// request (positive = fixed port, `0` = dynamic, null = none).
   int? get publicPort => payload['publicPort'] as int?;
 
-  factory Frame.hello({required String role, required String service}) =>
-      Frame(FrameType.hello, {'role': role, 'service': service});
+  /// `reason` field of a [FrameType.reject] frame.
+  String? get reason => payload['reason'] as String?;
+
+  /// Builds a HELLO. A server agent may include [publicPort] to ask the hub to
+  /// expose the service on a public port: a positive value requests that fixed
+  /// port, `0` requests a dynamically allocated one, and `null` requests none.
+  factory Frame.hello({
+    required String role,
+    required String service,
+    int? publicPort,
+  }) => Frame(FrameType.hello, {
+    'role': role,
+    'service': service,
+    'publicPort': ?publicPort,
+  });
 
   factory Frame.activate({String? peer}) =>
       Frame(FrameType.activate, peer != null ? {'peer': peer} : const {});
@@ -80,6 +100,9 @@ class Frame {
     FrameType.welcome,
     publicPort != null ? {'publicPort': publicPort} : const {},
   );
+
+  factory Frame.reject(String reason) =>
+      Frame(FrameType.reject, {'reason': reason});
 
   static const Frame pingFrame = Frame(FrameType.ping);
   static const Frame pongFrame = Frame(FrameType.pong);

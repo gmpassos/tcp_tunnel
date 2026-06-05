@@ -16,6 +16,13 @@
 - The hub now tells each connecting server agent its service's public port (a
   `WELCOME` control frame); `publish` logs where the service is publicly mapped
   (or that it is local port mode only). Exposed as `TunnelServerAgent.publicPort`.
+- `publish` can request a public port from the hub (default off):
+  `--public-port <n>` (fixed), `--public-port any` / `--public-port .` (dynamic),
+  or `--public` (alias for `--public-port any`). Exposed as
+  `TunnelServerAgent.requestPublicPort`. If the requested port is unavailable
+  (already in use by another service/process, or unallocatable), the hub sends a
+  `REJECT` frame and `publish` exits non-zero with the reason
+  (`TunnelServerAgent.onPublicPortRejected`).
 - New library APIs:
   - `lib/src/tcp_tunnel_protocol.dart`: length-prefixed control frames
     (`HELLO`/`ACTIVATE`/`PING`/`PONG`/`READY`), `encodeFrame`/`decodeFrame`, and

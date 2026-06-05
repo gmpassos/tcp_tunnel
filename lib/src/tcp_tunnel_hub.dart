@@ -140,9 +140,9 @@ class TunnelHub {
   /// resolves to a concrete ephemeral port at [start].
   final Map<String, int> _boundPorts = {};
 
-  /// Services whose dynamic public port is currently being bound, to avoid
-  /// allocating twice when multiple agents register the same service at once.
-  final Set<String> _allocatingDynamic = {};
+  /// Services whose public port is currently being bound, to avoid allocating
+  /// twice when multiple agents register the same service at once.
+  final Set<String> _allocatingPublicPort = {};
 
   /// Ports within [dynamicPortRange] already handed out, so a subsequent
   /// allocation skips them instead of re-failing on the same taken port.
@@ -177,6 +177,7 @@ class TunnelHub {
         entry.key,
         dynamic: entry.value == 0,
         fixedPort: entry.value,
+        requested: false,
       );
     }
 
@@ -204,7 +205,7 @@ class TunnelHub {
         }
 
         if (role == 'server') {
-          _registerServer(service, conn);
+          _registerServer(service, conn, requestedPublicPort: frame.publicPort);
         } else if (role == 'client') {
           _registerClient(service, SocketAsync.adopt(conn), _peerOf(socket));
         } else {
@@ -224,7 +225,11 @@ class TunnelHub {
     _registerClient(service, SocketAsync.from(socket), _peerOf(socket));
   }
 
-  void _registerServer(String service, FramedConnection conn) {
+  void _registerServer(
+    String service,
+    FramedConnection conn, {
+    int? requestedPublicPort,
+  }) {
     final reg = _registry(service);
     final parked = _ParkedServer(conn);
 
@@ -241,7 +246,20 @@ class TunnelHub {
       );
     }
 
-    _ensureDynamicPublicPort(service);
+    // Decide whether a public port should be ensured for this service: an
+    // explicit agent request takes precedence, otherwise the hub-wide
+    // [dynamicPublicPorts] setting applies.
+    if (requestedPublicPort != null) {
+      _ensurePublicPort(
+        service,
+        dynamic: requestedPublicPort == 0,
+        fixedPort: requestedPublicPort,
+        requested: true,
+      );
+    } else if (dynamicPublicPorts) {
+      _ensurePublicPort(service, dynamic: true, requested: false);
+    }
+
     _maybeWelcome(parked, service);
     _keepParked(parked);
     _pair(reg);
@@ -250,8 +268,8 @@ class TunnelHub {
   /// Tells a parked server conn its service's public port, once known.
   ///
   /// Sent immediately when the port is already bound, or when no public port
-  /// will ever be assigned (local port mode only). When a dynamic port is still
-  /// being allocated, [_openPublicPort] sends it after the bind completes.
+  /// will ever be assigned (local port mode only). When a port is still being
+  /// bound, [_openPublicPort] sends it after the bind completes.
   void _maybeWelcome(_ParkedServer parked, String service) {
     if (parked.welcomed) return;
 
@@ -259,24 +277,33 @@ class TunnelHub {
     if (port != null) {
       parked.welcomed = true;
       parked.conn.writeFrame(Frame.welcome(publicPort: port));
-    } else if (!dynamicPublicPorts && !_allocatingDynamic.contains(service)) {
+    } else if (!_allocatingPublicPort.contains(service)) {
       // No public port now and none coming: local port mode only.
       parked.welcomed = true;
       parked.conn.writeFrame(Frame.welcome());
     }
   }
 
-  /// Binds a dynamically allocated public port for [service] on first
-  /// registration when [dynamicPublicPorts] is enabled and it has none yet.
-  void _ensureDynamicPublicPort(String service) {
-    if (!dynamicPublicPorts) return;
+  /// Ensures [service] has a public port, binding one if needed (deduplicated
+  /// against a bind already in progress). [dynamic] allocates automatically
+  /// (honoring [dynamicPortRange]); otherwise [fixedPort] is bound. When
+  /// [requested] (the agent asked via HELLO), a bind failure rejects the agent
+  /// instead of silently leaving it in local port mode.
+  void _ensurePublicPort(
+    String service, {
+    required bool dynamic,
+    int fixedPort = 0,
+    required bool requested,
+  }) {
     if (_boundPorts.containsKey(service)) return;
-    if (!_allocatingDynamic.add(service)) return; // already allocating
+    if (!_allocatingPublicPort.add(service)) return; // already allocating
 
     _openPublicPort(
       service,
-      dynamic: true,
-    ).whenComplete(() => _allocatingDynamic.remove(service));
+      dynamic: dynamic,
+      fixedPort: fixedPort,
+      requested: requested,
+    ).whenComplete(() => _allocatingPublicPort.remove(service));
   }
 
   /// Binds a public port for [service] and starts accepting plain TCP clients.
@@ -288,15 +315,16 @@ class TunnelHub {
     String service, {
     required bool dynamic,
     int fixedPort = 0,
+    required bool requested,
   }) async {
     final ServerSocket server;
     try {
       if (dynamic) {
         final bound = await _bindDynamic();
         if (bound == null) {
-          _log.severe(
-            '** No free port in range $dynamicPortRange for service "$service"',
-          );
+          final reason = 'no free public port in range $dynamicPortRange';
+          _log.severe('** $reason for service "$service"');
+          _failPublicPort(service, requested, reason);
           return false;
         }
         server = bound;
@@ -304,7 +332,13 @@ class TunnelHub {
         server = await ServerSocket.bind('0.0.0.0', fixedPort);
       }
     } catch (e, s) {
-      _log.severe('** Failed to bind public port for "$service": $e', e, s);
+      final reason = _bindFailureReason(dynamic, fixedPort, e);
+      _log.severe(
+        '** Failed to bind public port for "$service": $reason',
+        e,
+        s,
+      );
+      _failPublicPort(service, requested, reason);
       return false;
     }
 
@@ -317,16 +351,70 @@ class TunnelHub {
     );
 
     // Inform any server conns that registered before the port was bound.
+    _broadcastWelcome(service, server.port);
+    return true;
+  }
+
+  /// Sends a WELCOME with [port] (null = none) to every not-yet-welcomed parked
+  /// server conn of [service].
+  void _broadcastWelcome(String service, int? port) {
     final reg = _registries[service];
-    if (reg != null) {
-      for (final parked in reg.parked) {
-        if (!parked.welcomed) {
-          parked.welcomed = true;
-          parked.conn.writeFrame(Frame.welcome(publicPort: server.port));
-        }
+    if (reg == null) return;
+    for (final parked in reg.parked) {
+      if (!parked.welcomed) {
+        parked.welcomed = true;
+        parked.conn.writeFrame(Frame.welcome(publicPort: port));
       }
     }
-    return true;
+  }
+
+  /// Handles a public-port bind failure: rejects the agent with [reason] when it
+  /// [requested] the port, otherwise leaves it in local port mode (WELCOME none).
+  void _failPublicPort(String service, bool requested, String reason) {
+    if (requested) {
+      _broadcastReject(service, reason);
+    } else {
+      _broadcastWelcome(service, null);
+    }
+  }
+
+  /// Sends a REJECT with [reason] to every not-yet-welcomed parked server conn
+  /// of [service].
+  void _broadcastReject(String service, String reason) {
+    final reg = _registries[service];
+    if (reg == null) return;
+    for (final parked in reg.parked.toList()) {
+      if (!parked.welcomed) {
+        parked.welcomed = true;
+        parked.conn.writeFrame(Frame.reject(reason));
+      }
+    }
+  }
+
+  /// Builds a human-readable reason for a public-port bind failure.
+  String _bindFailureReason(bool dynamic, int fixedPort, Object e) {
+    if (dynamic) {
+      return 'could not allocate a dynamic public port: $e';
+    }
+
+    // Identify a conflicting service already mapped to this port, if any.
+    String? owner;
+    for (final entry in _boundPorts.entries) {
+      if (entry.value == fixedPort) {
+        owner = entry.key;
+        break;
+      }
+    }
+
+    final String detail;
+    if (owner != null) {
+      detail = 'already mapped to service "$owner"';
+    } else if (e is SocketException) {
+      detail = e.osError?.message ?? e.message;
+    } else {
+      detail = e.toString();
+    }
+    return 'public port $fixedPort is unavailable ($detail)';
   }
 
   /// Binds a dynamically allocated [ServerSocket], honoring [dynamicPortRange].

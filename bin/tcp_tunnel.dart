@@ -28,6 +28,10 @@ void main(List<String> args) {
       '  \$> tcp_tunnel publish --hub %host:%port --service mysql --target 127.0.0.1:3306 --pool 4',
     );
     print(
+      '       --public-port 13306 | any | .   (ask the hub for a public port; default off)',
+    );
+    print('       --public   (alias for --public-port any)');
+    print(
       '  \$> tcp_tunnel connect --hub %host:%port --service mysql --listen 3306\n',
     );
     exit(0);
@@ -215,11 +219,13 @@ void _run(String mode, List<String> args, bool loop, bool verbose) {
     var target = _parseHostPort(args, '--target');
     var pool = _parseArgInt(args, ['--pool'], defaultValue: 4);
     if (pool < 1) pool = 1;
+    var publicPort = _parsePublicPortRequest(args);
 
     print('-- Hub: ${hub.host}:${hub.port}');
     print('-- Service: $service');
     print('-- Target: ${target.host}:${target.port}');
     print('-- Pool: $pool');
+    print('-- Public port request: ${_describePublicPortRequest(publicPort)}');
     print('-- Verbose: $verbose');
 
     var agent = TunnelServerAgent(
@@ -229,11 +235,16 @@ void _run(String mode, List<String> args, bool loop, bool verbose) {
       target.port,
       targetHost: target.host,
       poolSize: pool,
+      requestPublicPort: publicPort,
       verbose: verbose,
     );
+    agent.onPublicPortRejected = (reason) {
+      print('** Publish failed: $reason');
+      exit(1);
+    };
     _shutdownActions.add(agent.close);
     agent.start();
-    _printPublishUsage(hub, service, target);
+    _printPublishUsage(hub, service, target, publicPort);
   } else if (mode == 'connect') {
     var hub = _parseHostPort(args, '--hub');
     var service = _parseArgStr(args, ['--service'], required: true)!;
@@ -318,6 +329,35 @@ Map<String, int> _parseMaps(List<String> args) {
   return map;
 }
 
+/// Parses the optional public-port request for `publish`.
+///
+/// `--public-port <n>` requests a fixed public port, `--public-port any` (or
+/// `.`) requests a dynamically allocated one. `--public` is an alias for
+/// `--public-port any`. Returns `null` (off), `0` (dynamic), or a positive port.
+int? _parsePublicPortRequest(List<String> args) {
+  if (_withFlag(args, 'public')) return 0; // alias for --public-port any
+
+  var value = _parseArgStr(args, ['--public-port', '--publicport']);
+  if (value == null) return null;
+
+  var v = value.trim().toLowerCase();
+  if (v == 'any' || v == '.') return 0; // dynamic
+
+  var port = int.tryParse(v);
+  if (port == null || port < 1 || port > 65535) {
+    throw ArgumentError(
+      'Invalid --public-port "$value", expected a port number, "any", or "."',
+    );
+  }
+  return port;
+}
+
+String _describePublicPortRequest(int? request) {
+  if (request == null) return 'off';
+  if (request == 0) return 'dynamic (any)';
+  return '$request';
+}
+
 /// Parses an optional `--port-range start-end` argument.
 PortRange? _parsePortRange(List<String> args) {
   var value = _parseArgStr(args, ['--port-range', '--portrange']);
@@ -380,16 +420,36 @@ void _printHubUsage(
   _printHowToUse('hub', lines);
 }
 
-void _printPublishUsage(_HostPort hub, String service, _HostPort target) {
-  _printHowToUse('publish', [
+void _printPublishUsage(
+  _HostPort hub,
+  String service,
+  _HostPort target,
+  int? publicPortRequest,
+) {
+  var lines = [
     'Publishing "$service" (-> ${target.host}:${target.port}) '
         'via hub ${hub.host}:${hub.port}.',
+  ];
+
+  if (publicPortRequest != null) {
+    final which = publicPortRequest == 0
+        ? 'a dynamically allocated public port'
+        : 'public port $publicPortRequest';
+    lines.add(
+      'Requested $which on the hub '
+      '(the actual port is reported below once the hub confirms it).',
+    );
+  }
+
+  lines.addAll([
     'Consumers can reach it:',
     '  - Public port mode: connect to the hub\'s public port mapped to '
-        '"$service" (reported below once the hub confirms it).',
+        '"$service"${publicPortRequest == null ? ' (if one is configured)' : ''}.',
     '  - Local port mode:  tcp_tunnel connect --hub ${hub.host}:${hub.port} '
         '--service $service --listen <localPort>',
   ]);
+
+  _printHowToUse('publish', lines);
 }
 
 void _printConnectUsage(_HostPort hub, String service, int listenPort) {

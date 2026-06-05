@@ -318,6 +318,136 @@ void main() {
       await echo.close();
     });
 
+    test(
+      'publish requesting a fixed public port binds it and round-trips',
+      () async {
+        final echo = await EchoServer.bind();
+        final controlPort = await freePort();
+        final wantPort = await freePort();
+
+        // Plain hub: no preconfigured public ports.
+        final hub = TunnelHub(controlPort);
+        await hub.start();
+
+        final agent = TunnelServerAgent(
+          'localhost',
+          controlPort,
+          'svc',
+          echo.port,
+          poolSize: 2,
+          requestPublicPort: wantPort, // agent-requested fixed public port
+        );
+        await agent.start();
+
+        expect(await waitFor(() => agent.publicPort == wantPort), isTrue);
+        expect(hub.boundPorts['svc'], wantPort);
+
+        final client = await TestClient.connect(wantPort);
+        client.send('req-fixed');
+        expect(await waitFor(() => client.text == 'req-fixed'), isTrue);
+
+        await client.close();
+        agent.close();
+        hub.close();
+        await echo.close();
+      },
+    );
+
+    test('publish requesting a dynamic public port (0) gets one', () async {
+      final echo = await EchoServer.bind();
+      final controlPort = await freePort();
+
+      final hub = TunnelHub(controlPort);
+      await hub.start();
+
+      final agent = TunnelServerAgent(
+        'localhost',
+        controlPort,
+        'svc',
+        echo.port,
+        poolSize: 1,
+        requestPublicPort: 0, // dynamic
+      );
+      await agent.start();
+
+      expect(await waitFor(() => (agent.publicPort ?? 0) > 0), isTrue);
+
+      agent.close();
+      hub.close();
+      await echo.close();
+    });
+
+    test(
+      'publish requesting an in-use port is rejected with a reason',
+      () async {
+        final echo = await EchoServer.bind();
+        final controlPort = await freePort();
+
+        // Occupy a port on the same address the hub binds (0.0.0.0) to force a
+        // deterministic bind conflict.
+        final blocker = await ServerSocket.bind('0.0.0.0', 0);
+        final busyPort = blocker.port;
+
+        final hub = TunnelHub(controlPort);
+        await hub.start();
+
+        final agent = TunnelServerAgent(
+          'localhost',
+          controlPort,
+          'svc',
+          echo.port,
+          poolSize: 1,
+          requestPublicPort: busyPort,
+        );
+
+        String? rejectionReason;
+        agent.onPublicPortRejected = (reason) => rejectionReason = reason;
+
+        await agent.start();
+
+        expect(await waitFor(() => rejectionReason != null), isTrue);
+        expect(rejectionReason, contains('$busyPort'));
+
+        await blocker.close();
+        agent.close();
+        hub.close();
+        await echo.close();
+      },
+    );
+
+    test(
+      'publish requesting a port mapped to another service is rejected',
+      () async {
+        final echo = await EchoServer.bind();
+        final controlPort = await freePort();
+        final sharedPort = await freePort();
+
+        // Service "a" owns sharedPort (configured map).
+        final hub = TunnelHub(controlPort, servicePorts: {'a': sharedPort});
+        await hub.start();
+
+        // Service "b" asks for the same port -> conflict.
+        final agentB = TunnelServerAgent(
+          'localhost',
+          controlPort,
+          'b',
+          echo.port,
+          poolSize: 1,
+          requestPublicPort: sharedPort,
+        );
+        String? reason;
+        agentB.onPublicPortRejected = (r) => reason = r;
+        await agentB.start();
+
+        expect(await waitFor(() => reason != null), isTrue);
+        expect(reason, contains('a')); // names the owning service
+
+        agentB.close();
+        hub.close();
+        await echo.close();
+      },
+    );
+
     test('server agent learns its public port from the hub', () async {
       final echo = await EchoServer.bind();
       final controlPort = await freePort();
