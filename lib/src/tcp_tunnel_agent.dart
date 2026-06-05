@@ -29,6 +29,11 @@ class TunnelServerAgent {
   /// Number of parked connections kept ready at the hub.
   final int poolSize;
 
+  /// Asks the hub to expose this service on a public port (public port mode):
+  /// a positive value requests that fixed port, `0` requests a dynamically
+  /// allocated one, and `null` (default) requests none.
+  final int? requestPublicPort;
+
   /// Keepalive interval for parked connections.
   final Duration pingInterval;
 
@@ -44,6 +49,7 @@ class TunnelServerAgent {
     this.targetPort, {
     this.targetHost = 'localhost',
     this.poolSize = 4,
+    this.requestPublicPort,
     this.pingInterval = const Duration(seconds: 20),
     this.reconnectDelay = const Duration(seconds: 3),
     this.verbose = false,
@@ -62,6 +68,13 @@ class TunnelServerAgent {
   /// `null` if unknown yet or the service has no public port (local port mode
   /// only). Reported by the hub shortly after the agent connects.
   int? get publicPort => _publicPort;
+
+  bool _rejected = false;
+
+  /// Called (once) if the hub rejects the registration — e.g. a requested
+  /// [requestPublicPort] is already in use or cannot be allocated. The agent is
+  /// closed before this fires. Lets the CLI fail with a clear reason.
+  void Function(String reason)? onPublicPortRejected;
 
   final Set<FramedConnection> _parked = {};
 
@@ -108,7 +121,13 @@ class TunnelServerAgent {
     }
 
     final conn = FramedConnection(socket, zone: Tunnel.zoneGuarded);
-    conn.writeFrame(Frame.hello(role: 'server', service: service));
+    conn.writeFrame(
+      Frame.hello(
+        role: 'server',
+        service: service,
+        publicPort: requestPublicPort,
+      ),
+    );
     _parked.add(conn);
 
     final pingTimer = Timer.periodic(pingInterval, (_) {
@@ -143,11 +162,30 @@ class TunnelServerAgent {
         return;
       }
 
+      if (frame.type == FrameType.reject) {
+        _onReject(frame.reason);
+        return; // fatal: the agent is closed by _onReject
+      }
+
       if (frame.type == FrameType.welcome) {
         _onWelcome(frame.publicPort);
       }
       // PONG and anything else: ignore while parked.
     }
+  }
+
+  /// Handles a hub rejection (e.g. requested public port unavailable): logs the
+  /// reason, closes the agent, and notifies [onPublicPortRejected] once.
+  void _onReject(String? reason) {
+    if (_rejected) return;
+    _rejected = true;
+
+    final msg = reason ?? 'registration rejected by hub';
+    _log.severe('** Hub rejected publishing "$service": $msg');
+
+    final cb = onPublicPortRejected;
+    close(); // stop the pool / reconnects
+    if (cb != null) cb(msg);
   }
 
   /// Reports the public port the hub mapped to [service], logging once (and
