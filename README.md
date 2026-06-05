@@ -181,7 +181,7 @@ Three roles are involved:
 - **Consumer** — reaches the service in one of two modes (both can be used at the
   same time against the same published service):
 
-### Mode 1 — Public port on the hub
+### Mode 1 — Public port mode
 
 The hub binds a **public TCP port** mapped to a service; a plain TCP client
 connects straight to it, no agent required.
@@ -201,7 +201,7 @@ tcp_tunnel publish --hub hub.domain:7000 --service mysql --target 127.0.0.1:3306
 mysql -u myuser -p -h hub.domain -P 13306
 ```
 
-### Mode 2 — Local port on the consumer side
+### Mode 2 — Local port mode
 
 The consumer runs a **client agent** that opens a local listen port and uses the
 hub purely as a rendezvous (the hub needs no public per-service port).

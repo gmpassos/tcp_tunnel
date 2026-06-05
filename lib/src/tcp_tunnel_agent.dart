@@ -184,7 +184,7 @@ class TunnelServerAgent {
 }
 
 /// Consumes a hub-published service via a local listen port (the "client agent"
-/// side, Mode 2).
+/// side, local port mode).
 ///
 /// Opens a local [listenPort]; for each accepted application socket it dials the
 /// hub control port, handshakes `HELLO role=client service=...`, and raw-pipes

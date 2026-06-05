@@ -25,9 +25,9 @@ class _ParkedServer {
 
 /// A client awaiting a server-agent connection.
 ///
-/// Unifies Mode 1 (a plain public-port socket) and Mode 2 (a client agent
-/// connection adopted after its HELLO): both are just a [SocketAsync] ready to
-/// be piped.
+/// Unifies public port mode (a plain public-port socket) and local port mode (a
+/// client agent connection adopted after its HELLO): both are just a
+/// [SocketAsync] ready to be piped.
 class _WaitingClient {
   final SocketAsync socket;
   final String peer;
@@ -56,14 +56,14 @@ class _ServiceRegistry {
 /// [FrameType.activate] frame) and the two are raw-piped.
 ///
 /// Clients reach a service either by connecting to a per-service public port
-/// ([servicePorts], Mode 1) or via a client agent that dials the
-/// [controlPort] with a HELLO (Mode 2).
+/// ([servicePorts], public port mode) or via a client agent that dials the
+/// [controlPort] with a HELLO (local port mode).
 class TunnelHub {
   /// Port where agents (server and client) connect and handshake.
   final int controlPort;
 
-  /// Mode 1 mapping: service name → public TCP port. Plain TCP clients connect
-  /// straight to these ports.
+  /// Public port mode mapping: service name → public TCP port. Plain TCP clients
+  /// connect straight to these ports.
   final Map<String, int> servicePorts;
 
   /// How long a waiting client is held before being closed when no parked
@@ -153,7 +153,7 @@ class TunnelHub {
     );
   }
 
-  /// Handles a Mode 1 plain TCP client on a public service port.
+  /// Handles a public port mode plain TCP client on a public service port.
   void _onPublicSocket(String service, Socket socket) {
     _registerClient(service, SocketAsync.from(socket), _peerOf(socket));
   }

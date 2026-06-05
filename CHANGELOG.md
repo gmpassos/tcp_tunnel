@@ -3,9 +3,9 @@
 - **Hub mode:** a single public hub that routes named services
   from private LANs (NAT-friendly on both ends) to remote consumers, using a
   pre-warmed pool of parked connections. Two consumer modes share the same hub:
-  - **Mode 1 (public port):** the hub binds a public TCP port per service
+  - **Mode 1 — public port mode:** the hub binds a public TCP port per service
     (`--map svc=port`); plain TCP clients connect directly.
-  - **Mode 2 (client local port):** a client agent opens a local listen port and
+  - **Mode 2 — local port mode:** a client agent opens a local listen port and
     uses the hub purely as a rendezvous (no public per-service port needed).
 - New library APIs:
   - `lib/src/tcp_tunnel_protocol.dart`: length-prefixed control frames

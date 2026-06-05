@@ -193,36 +193,39 @@ void main() {
   });
 
   group('hub integration', () {
-    test('Mode 1: plain client via public port round-trips', () async {
-      final echo = await EchoServer.bind();
-      final controlPort = await freePort();
-      final publicPort = await freePort();
+    test(
+      'public port mode: plain client via public port round-trips',
+      () async {
+        final echo = await EchoServer.bind();
+        final controlPort = await freePort();
+        final publicPort = await freePort();
 
-      final hub = TunnelHub(controlPort, servicePorts: {'svc': publicPort});
-      await hub.start();
+        final hub = TunnelHub(controlPort, servicePorts: {'svc': publicPort});
+        await hub.start();
 
-      final agent = TunnelServerAgent(
-        'localhost',
-        controlPort,
-        'svc',
-        echo.port,
-        poolSize: 2,
-      );
-      await agent.start();
-      await _wait(150); // warm the pool
+        final agent = TunnelServerAgent(
+          'localhost',
+          controlPort,
+          'svc',
+          echo.port,
+          poolSize: 2,
+        );
+        await agent.start();
+        await _wait(150); // warm the pool
 
-      final client = await TestClient.connect(publicPort);
-      client.send('ping-mode1');
+        final client = await TestClient.connect(publicPort);
+        client.send('ping-mode1');
 
-      expect(await waitFor(() => client.text == 'ping-mode1'), isTrue);
+        expect(await waitFor(() => client.text == 'ping-mode1'), isTrue);
 
-      await client.close();
-      agent.close();
-      hub.close();
-      await echo.close();
-    });
+        await client.close();
+        agent.close();
+        hub.close();
+        await echo.close();
+      },
+    );
 
-    test('Mode 2: client agent local port round-trips', () async {
+    test('local port mode: client agent local port round-trips', () async {
       final echo = await EchoServer.bind();
       final controlPort = await freePort();
       final localPort = await freePort();
