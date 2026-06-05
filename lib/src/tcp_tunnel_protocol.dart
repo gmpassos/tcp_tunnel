@@ -72,6 +72,10 @@ class Frame {
   /// `peer` field of a [FrameType.activate] frame.
   String? get peer => payload['peer'] as String?;
 
+  /// `token` field of a [FrameType.hello] frame: the shared secret an agent
+  /// presents to authenticate with the hub. `null` when no token was sent.
+  String? get token => payload['token'] as String?;
+
   /// `publicPort` field. On a [FrameType.welcome] frame it is the port the hub
   /// mapped (null = none). On a server [FrameType.hello] it is the agent's
   /// request (positive = fixed port, `0` = dynamic, null = none).
@@ -83,14 +87,20 @@ class Frame {
   /// Builds a HELLO. A server agent may include [publicPort] to ask the hub to
   /// expose the service on a public port: a positive value requests that fixed
   /// port, `0` requests a dynamically allocated one, and `null` requests none.
+  ///
+  /// [token] is the shared secret presented for authentication; include it when
+  /// the hub is configured with an `authToken`. It should travel over a TLS link
+  /// so it is not exposed on the wire.
   factory Frame.hello({
     required String role,
     required String service,
     int? publicPort,
+    String? token,
   }) => Frame(FrameType.hello, {
     'role': role,
     'service': service,
     'publicPort': ?publicPort,
+    'token': ?token,
   });
 
   factory Frame.activate({String? peer}) =>
@@ -130,6 +140,22 @@ Uint8List encodeFrame(Frame frame) {
   out[6] = len & 0xFF;
   out.setRange(kFrameHeaderSize, out.length, payloadBytes);
   return out;
+}
+
+/// Compares [a] and [b] in time independent of how many leading bytes match,
+/// so a network attacker cannot recover a secret token byte-by-byte by timing
+/// the hub's response. The comparison still short-circuits on differing length,
+/// which only leaks the secret's length — not its content.
+bool constantTimeEquals(String a, String b) {
+  final ab = utf8.encode(a);
+  final bb = utf8.encode(b);
+  if (ab.length != bb.length) return false;
+
+  var diff = 0;
+  for (var i = 0; i < ab.length; i++) {
+    diff |= ab[i] ^ bb[i];
+  }
+  return diff == 0;
 }
 
 /// Result of [decodeFrame]: the parsed [frame] and how many bytes it consumed.

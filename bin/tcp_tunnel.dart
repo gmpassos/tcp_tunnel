@@ -25,6 +25,12 @@ void main(List<String> args) {
       '       --port-range 20000-20100 (bound dynamic ports to a firewall-friendly range)',
     );
     print(
+      '       --tls-cert cert.pem --tls-key key.pem   (serve the control port over TLS)',
+    );
+    print(
+      '       --token-file f | --token <secret> | env TCP_TUNNEL_TOKEN   (require agent auth)',
+    );
+    print(
       '  \$> tcp_tunnel publish --hub %host:%port --service mysql --target 127.0.0.1:3306 --pool 4',
     );
     print(
@@ -33,6 +39,17 @@ void main(List<String> args) {
     print('       --public   (alias for --public-port any)');
     print(
       '  \$> tcp_tunnel connect --hub %host:%port --service mysql --listen 3306\n',
+    );
+    print('  Agent security (publish/connect):');
+    print('       --tls   (connect to the hub over TLS)');
+    print(
+      '       --tls-ca ca.pem   (trust a custom/self-signed hub CA; implies --tls)',
+    );
+    print(
+      '       --tls-insecure   (accept any hub certificate; dev only; implies --tls)',
+    );
+    print(
+      '       --token-file f | --token <secret> | env TCP_TUNNEL_TOKEN   (authenticate)\n',
     );
     exit(0);
   }
@@ -190,18 +207,32 @@ void _run(String mode, List<String> args, bool loop, bool verbose) {
     var dynamicMap = _withFlag(args, 'map-dynamic');
     var portRange = _parsePortRange(args);
     var servicePorts = _parseMaps(args);
+    var securityContext = _parseHubTls(args);
+    var token = _parseToken(args);
 
     print('-- Control port: $controlPort');
     print('-- Service ports: $servicePorts');
     print('-- Allow dynamic public-port requests (--map-dynamic): $dynamicMap');
     print('-- Dynamic port range: ${portRange ?? '(any)'}');
+    print('-- TLS: ${securityContext != null ? 'on' : 'off'}');
+    print('-- Auth: ${token != null ? 'token set' : 'none'}');
     print('-- Verbose: $verbose');
+
+    if (token == null && securityContext != null) {
+      print(
+        '** Warning: TLS is on but no token is set '
+        '(--token-file / TCP_TUNNEL_TOKEN / --token); '
+        'any client reaching the control port can publish/consume.',
+      );
+    }
 
     var hub = TunnelHub(
       controlPort,
       servicePorts: servicePorts,
       dynamicPublicPorts: dynamicMap,
       dynamicPortRange: portRange,
+      securityContext: securityContext,
+      authToken: token,
       verbose: verbose,
     );
     _shutdownActions.add(hub.close);
@@ -220,12 +251,16 @@ void _run(String mode, List<String> args, bool loop, bool verbose) {
     var pool = _parseArgInt(args, ['--pool'], defaultValue: 4);
     if (pool < 1) pool = 1;
     var publicPort = _parsePublicPortRequest(args);
+    var tls = _parseAgentTls(args);
+    var token = _parseToken(args);
 
     print('-- Hub: ${hub.host}:${hub.port}');
     print('-- Service: $service');
     print('-- Target: ${target.host}:${target.port}');
     print('-- Pool: $pool');
     print('-- Public port request: ${_describePublicPortRequest(publicPort)}');
+    print('-- TLS: ${tls.describe}');
+    print('-- Auth: ${token != null ? 'token set' : 'none'}');
     print('-- Verbose: $verbose');
 
     var agent = TunnelServerAgent(
@@ -236,6 +271,9 @@ void _run(String mode, List<String> args, bool loop, bool verbose) {
       targetHost: target.host,
       poolSize: pool,
       requestPublicPort: publicPort,
+      securityContext: tls.context,
+      onBadCertificate: tls.onBadCertificate,
+      authToken: token,
       verbose: verbose,
     );
     agent.onPublicPortRejected = (reason) {
@@ -252,10 +290,14 @@ void _run(String mode, List<String> args, bool loop, bool verbose) {
     if (listenPort < 0) {
       throw ArgumentError('Missing --listen <port>');
     }
+    var tls = _parseAgentTls(args);
+    var token = _parseToken(args);
 
     print('-- Hub: ${hub.host}:${hub.port}');
     print('-- Service: $service');
     print('-- Listen port: $listenPort');
+    print('-- TLS: ${tls.describe}');
+    print('-- Auth: ${token != null ? 'token set' : 'none'}');
     print('-- Verbose: $verbose');
 
     var agent = TunnelClientAgent(
@@ -263,6 +305,9 @@ void _run(String mode, List<String> args, bool loop, bool verbose) {
       hub.port,
       service,
       listenPort,
+      securityContext: tls.context,
+      onBadCertificate: tls.onBadCertificate,
+      authToken: token,
       verbose: verbose,
     );
     _shutdownActions.add(agent.close);
@@ -369,6 +414,80 @@ PortRange? _parsePortRange(List<String> args) {
       'Invalid --port-range "$value", expected start-end (e.g. 20000-20100): $e',
     );
   }
+}
+
+/// Resolves the shared auth token, in priority order:
+///   1. `--token-file <path>` — reads the secret from a file (keeps it out of
+///      the shell history and the process arg list; trailing newline trimmed).
+///   2. `TCP_TUNNEL_TOKEN` env var.
+///   3. `--token <secret>` — convenient but visible in `ps`/history.
+/// Returns null when none is set.
+String? _parseToken(List<String> args) {
+  var fromFile = _parseArgStr(args, ['--token-file', '--tokenfile']);
+  if (fromFile != null) {
+    var token = File(fromFile).readAsStringSync().trim();
+    if (token.isEmpty) {
+      throw ArgumentError('Token file "$fromFile" is empty');
+    }
+    return token;
+  }
+
+  var fromEnv = Platform.environment['TCP_TUNNEL_TOKEN'];
+  if (fromEnv != null && fromEnv.isNotEmpty) return fromEnv;
+
+  var fromArg = _parseArgStr(args, ['--token']);
+  if (fromArg != null && fromArg.isNotEmpty) return fromArg;
+
+  return null;
+}
+
+/// Builds the hub's TLS [SecurityContext] from `--tls-cert` / `--tls-key`
+/// (with optional `--tls-key-password`). Returns null when no cert is given
+/// (plaintext control port). Throws if only one of cert/key is provided.
+SecurityContext? _parseHubTls(List<String> args) {
+  var cert = _parseArgStr(args, ['--tls-cert', '--tlscert']);
+  var key = _parseArgStr(args, ['--tls-key', '--tlskey']);
+  var password = _parseArgStr(args, ['--tls-key-password', '--tlskeypassword']);
+
+  if (cert == null && key == null) return null;
+  if (cert == null || key == null) {
+    throw ArgumentError('Hub TLS requires both --tls-cert and --tls-key');
+  }
+
+  return SecurityContext()
+    ..useCertificateChain(cert)
+    ..usePrivateKey(key, password: password);
+}
+
+/// An agent's resolved TLS configuration.
+class _AgentTls {
+  final SecurityContext? context;
+  final bool Function(X509Certificate cert)? onBadCertificate;
+
+  _AgentTls(this.context, this.onBadCertificate);
+
+  String get describe {
+    if (context == null) return 'off';
+    return onBadCertificate != null ? 'on (insecure: accept any cert)' : 'on';
+  }
+}
+
+/// Parses agent TLS flags: `--tls` enables it, `--tls-ca <path>` trusts a custom
+/// or self-signed CA, and `--tls-insecure` accepts any certificate (dev only).
+/// `--tls-ca` / `--tls-insecure` imply `--tls`.
+_AgentTls _parseAgentTls(List<String> args) {
+  var ca = _parseArgStr(args, ['--tls-ca', '--tlsca']);
+  var insecure = _withFlag(args, 'tls-insecure');
+  var tls = _withFlag(args, 'tls') || ca != null || insecure;
+
+  if (!tls) return _AgentTls(null, null);
+
+  var context = SecurityContext(withTrustedRoots: true);
+  if (ca != null) {
+    context.setTrustedCertificates(ca);
+  }
+
+  return _AgentTls(context, insecure ? (_) => true : null);
 }
 
 /// Prints a "How to use" block for [mode].

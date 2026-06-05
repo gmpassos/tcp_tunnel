@@ -270,8 +270,52 @@ Server-speaks-first protocols (MySQL/SSH/SMTP banners) are supported.
 
 ## Security
 
-Please be aware that the tunnel communication is **NOT encrypted**,
-and any connection made over a public network **may expose its data to potential security risks**.
+By default the legacy `local` / `bridge` / `client` modes are **plaintext and
+unauthenticated** — over a public network they **may expose data to security
+risks**. (Note that any application-level encryption you tunnel, e.g. MySQL TLS
+or HTTPS, still passes through end-to-end, since the tunnel is a raw byte pipe.)
+
+**Hub mode** adds two opt-in, independent security layers on the agent↔hub links
+(the hops that cross untrusted networks). They can be used together or alone:
+
+### TLS (encryption)
+
+Serve the hub control port over TLS, and have agents dial in over TLS. This
+encrypts both the control frames and the raw-piped payload on the wire:
+
+```shell
+# Hub: present a certificate chain + private key on the control port.
+tcp_tunnel hub --control-port 7000 --tls-cert cert.pem --tls-key key.pem
+
+# Agents: connect over TLS, trusting the hub's CA.
+tcp_tunnel publish --hub hub.domain:7000 --service mysql --target 127.0.0.1:3306 --tls --tls-ca ca.pem
+tcp_tunnel connect --hub hub.domain:7000 --service mysql --listen 3306        --tls --tls-ca ca.pem
+```
+
+- `--tls` enables TLS on the agent. `--tls-ca <pem>` trusts a custom/self-signed
+  hub CA (implies `--tls`). `--tls-insecure` accepts **any** certificate — dev
+  only, it disables identity verification (implies `--tls`).
+
+### Token authentication
+
+Require agents to present a shared secret in their handshake; the hub
+constant-time compares it and rejects mismatches with a clear reason. Pair it
+with TLS so the token is never exposed on the wire:
+
+```shell
+# Resolved (in priority order) from --token-file, then $TCP_TUNNEL_TOKEN, then --token.
+tcp_tunnel hub     --control-port 7000 --tls-cert cert.pem --tls-key key.pem --token-file /etc/tcp_tunnel.token
+tcp_tunnel publish --hub hub.domain:7000 --service mysql --target 127.0.0.1:3306 --tls --token-file /etc/tcp_tunnel.token
+tcp_tunnel connect --hub hub.domain:7000 --service mysql --listen 3306        --tls --token-file /etc/tcp_tunnel.token
+```
+
+Prefer `--token-file` (or the `TCP_TUNNEL_TOKEN` env var) over `--token <secret>`,
+which is visible in shell history and the process argument list.
+
+These map to `TunnelHub.securityContext` / `authToken` and the agents'
+`securityContext` / `onBadCertificate` / `authToken` for programmatic use. The
+hub is still a plaintext relay point internally — for confidentiality the hub
+operator cannot break, rely on the application's own end-to-end encryption.
 
 ## Features and bugs
 

@@ -8,6 +8,27 @@ import 'tcp_tunnel_protocol.dart';
 
 final _log = logging.Logger('TunnelAgent');
 
+/// Dials the hub, upgrading to TLS when [securityContext] is provided.
+///
+/// Returns a [SecureSocket] (which is a [Socket]) in TLS mode, otherwise a
+/// plain [Socket]; either is a drop-in for [FramedConnection]/[SocketAsync].
+Future<Socket> _connectHub(
+  String host,
+  int port, {
+  SecurityContext? securityContext,
+  bool Function(X509Certificate cert)? onBadCertificate,
+}) {
+  if (securityContext == null) {
+    return Socket.connect(host, port);
+  }
+  return SecureSocket.connect(
+    host,
+    port,
+    context: securityContext,
+    onBadCertificate: onBadCertificate,
+  );
+}
+
 /// Publishes a local service through a [TunnelHub] (the "server agent" side).
 ///
 /// Runs inside the private LAN where the service lives. It keeps a pool of
@@ -40,6 +61,18 @@ class TunnelServerAgent {
   /// Delay before re-establishing a connection after a failure.
   final Duration reconnectDelay;
 
+  /// When non-null, connections to the hub are made over TLS using this context
+  /// (e.g. trusting the hub's self-signed CA via [SecurityContext.setTrustedCertificates]).
+  final SecurityContext? securityContext;
+
+  /// Certificate-validation override used when [securityContext] is set. Return
+  /// `true` to accept an otherwise-rejected certificate (e.g. a self-signed hub
+  /// cert in dev). When null, normal verification applies.
+  final bool Function(X509Certificate cert)? onBadCertificate;
+
+  /// Shared secret presented to the hub for authentication (sent in the HELLO).
+  final String? authToken;
+
   final bool verbose;
 
   TunnelServerAgent(
@@ -52,6 +85,9 @@ class TunnelServerAgent {
     this.requestPublicPort,
     this.pingInterval = const Duration(seconds: 20),
     this.reconnectDelay = const Duration(seconds: 3),
+    this.securityContext,
+    this.onBadCertificate,
+    this.authToken,
     this.verbose = false,
   });
 
@@ -107,7 +143,12 @@ class TunnelServerAgent {
   Future<void> _openParked() async {
     final Socket socket;
     try {
-      socket = await Socket.connect(hubHost, hubPort);
+      socket = await _connectHub(
+        hubHost,
+        hubPort,
+        securityContext: securityContext,
+        onBadCertificate: onBadCertificate,
+      );
     } catch (e) {
       if (verbose) _log.warning('** Hub connect $hubHost:$hubPort failed: $e');
       _onGone(backoff: true);
@@ -126,6 +167,7 @@ class TunnelServerAgent {
         role: 'server',
         service: service,
         publicPort: requestPublicPort,
+        token: authToken,
       ),
     );
     _parked.add(conn);
@@ -274,6 +316,16 @@ class TunnelClientAgent {
   /// Local address to bind ([listenPort]).
   final String listenHost;
 
+  /// When non-null, connections to the hub are made over TLS using this context.
+  final SecurityContext? securityContext;
+
+  /// Certificate-validation override used when [securityContext] is set (see
+  /// [TunnelServerAgent.onBadCertificate]).
+  final bool Function(X509Certificate cert)? onBadCertificate;
+
+  /// Shared secret presented to the hub for authentication (sent in the HELLO).
+  final String? authToken;
+
   final bool verbose;
 
   TunnelClientAgent(
@@ -282,6 +334,9 @@ class TunnelClientAgent {
     this.service,
     this.listenPort, {
     this.listenHost = '0.0.0.0',
+    this.securityContext,
+    this.onBadCertificate,
+    this.authToken,
     this.verbose = false,
   });
 
@@ -302,7 +357,12 @@ class TunnelClientAgent {
   Future<void> _onAppSocket(Socket appSocket) async {
     final Socket hubSocket;
     try {
-      hubSocket = await Socket.connect(hubHost, hubPort);
+      hubSocket = await _connectHub(
+        hubHost,
+        hubPort,
+        securityContext: securityContext,
+        onBadCertificate: onBadCertificate,
+      );
     } catch (e) {
       _log.warning('** Hub connect $hubHost:$hubPort failed: $e');
       appSocket.destroy();
@@ -310,7 +370,9 @@ class TunnelClientAgent {
     }
 
     final conn = FramedConnection(hubSocket, zone: Tunnel.zoneGuarded);
-    conn.writeFrame(Frame.hello(role: 'client', service: service));
+    conn.writeFrame(
+      Frame.hello(role: 'client', service: service, token: authToken),
+    );
 
     final hubSide = SocketAsync.adopt(conn);
     final appSide = SocketAsync.from(appSocket);
