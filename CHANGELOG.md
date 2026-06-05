@@ -1,4 +1,4 @@
-## 1.0.3
+## 1.0.2
 
 - `lib/src/tcp_tunnel_base.dart`:
   - Added end-to-end backpressure: `SocketAsync` now owns its stream
@@ -66,7 +66,7 @@
     - Removed old `redirectLocalPort`, `bridgePorts`, and `clientTunnel` helper functions.
     - Improved test reliability with explicit waits and socket flushes.
 
-## 1.0.2
+## 1.0.2+
 
 - `bin/tcp_tunnel.dart`:
   - Added support for `verbose` flag in CLI.
