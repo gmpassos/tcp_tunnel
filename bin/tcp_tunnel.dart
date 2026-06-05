@@ -19,7 +19,7 @@ void main(List<String> args) {
     );
     print('       --map svc=.   (dynamic public port for one service)');
     print(
-      '       --map-dynamic (dynamic public port for any published service)',
+      '       --map-dynamic (allow publishers to request a dynamic public port)',
     );
     print(
       '       --port-range 20000-20100 (bound dynamic ports to a firewall-friendly range)',
@@ -193,7 +193,7 @@ void _run(String mode, List<String> args, bool loop, bool verbose) {
 
     print('-- Control port: $controlPort');
     print('-- Service ports: $servicePorts');
-    print('-- Dynamic services (--map-dynamic): $dynamicMap');
+    print('-- Allow dynamic public-port requests (--map-dynamic): $dynamicMap');
     print('-- Dynamic port range: ${portRange ?? '(any)'}');
     print('-- Verbose: $verbose');
 
@@ -407,8 +407,8 @@ void _printHubUsage(
   if (dynamic) {
     lines.add('');
     lines.add(
-      '--map-dynamic is ON: any published service is auto-assigned a '
-      'public port (watch the log for the chosen port).',
+      '--map-dynamic is ON: publishers may request a dynamic public port '
+      'with --public-port any (the chosen port is logged).',
     );
   }
   if (portRange != null) {

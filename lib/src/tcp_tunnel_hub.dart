@@ -99,10 +99,12 @@ class TunnelHub {
   /// connect straight to these ports.
   final Map<String, int> servicePorts;
 
-  /// When `true`, any published service that has no public port yet is
-  /// automatically given a dynamically allocated (ephemeral) public port the
-  /// first time a server agent registers it. The chosen port is logged and
-  /// recorded in [boundPorts].
+  /// When `true`, server agents are allowed to request a dynamically allocated
+  /// (ephemeral) public port via their HELLO (`--public-port any`). When `false`
+  /// such requests are rejected with a reason. This gates only agent requests:
+  /// operator-configured dynamic ports (`--map svc=.`, i.e. a [servicePorts]
+  /// entry of `0`) are bound regardless. A service whose agent does not request a
+  /// public port stays in local port mode — no port is allocated automatically.
   final bool dynamicPublicPorts;
 
   /// Restricts dynamically allocated public ports (a `--map svc=.` entry or a
@@ -246,18 +248,34 @@ class TunnelHub {
       );
     }
 
-    // Decide whether a public port should be ensured for this service: an
-    // explicit agent request takes precedence, otherwise the hub-wide
-    // [dynamicPublicPorts] setting applies.
+    // Decide whether a public port should be ensured for this service. Only an
+    // explicit agent request triggers allocation; a dynamic request additionally
+    // requires the hub to allow it via [dynamicPublicPorts].
     if (requestedPublicPort != null) {
-      _ensurePublicPort(
-        service,
-        dynamic: requestedPublicPort == 0,
-        fixedPort: requestedPublicPort,
-        requested: true,
+      final wantsDynamic = requestedPublicPort == 0;
+      if (wantsDynamic && !dynamicPublicPorts) {
+        const reason =
+            'dynamic public ports are not enabled on this hub '
+            '(start it with --map-dynamic)';
+        _log.warning(
+          '** Rejecting public port request for "$service": $reason',
+        );
+        _broadcastReject(service, reason);
+      } else {
+        _ensurePublicPort(
+          service,
+          dynamic: wantsDynamic,
+          fixedPort: requestedPublicPort,
+          requested: true,
+        );
+      }
+    } else if (dynamicPublicPorts && verbose) {
+      // Dynamic public ports are allowed but this agent did not request one, so
+      // it stays in local port mode (auto-allocation is intentionally not done).
+      _log.info(
+        '-- No public port allocated for "$service": '
+        'agent did not request one (use --public-port any)',
       );
-    } else if (dynamicPublicPorts) {
-      _ensurePublicPort(service, dynamic: true, requested: false);
     }
 
     _maybeWelcome(parked, service);
