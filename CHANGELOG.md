@@ -1,3 +1,39 @@
+## 2.0.0
+
+- **Hub mode:** a single public hub that routes named services
+  from private LANs (NAT-friendly on both ends) to remote consumers, using a
+  pre-warmed pool of parked connections. Two consumer modes share the same hub:
+  - **Mode 1 — public port mode:** the hub binds a public TCP port per service
+    (`--map svc=port`); plain TCP clients connect directly. The port may be
+    dynamically allocated with `--map svc=.` (per service) or `--map-dynamic`
+    (auto-allocate a port for any published service); the chosen port is logged.
+    Dynamic allocation can be constrained to a firewall-friendly range via
+    `--port-range start-end` (`TunnelHub.dynamicPortRange` / `PortRange`).
+  - **Mode 2 — local port mode:** a client agent opens a local listen port and
+    uses the hub purely as a rendezvous (no public per-service port needed).
+- Every CLI command prints a "How to use" block on startup explaining how to
+  publish to / consume from it (the hub block lists allocated public ports).
+- The hub now tells each connecting server agent its service's public port (a
+  `WELCOME` control frame); `publish` logs where the service is publicly mapped
+  (or that it is local port mode only). Exposed as `TunnelServerAgent.publicPort`.
+- New library APIs:
+  - `lib/src/tcp_tunnel_protocol.dart`: length-prefixed control frames
+    (`HELLO`/`ACTIVATE`/`PING`/`PONG`/`READY`), `encodeFrame`/`decodeFrame`, and
+    `FramedConnection` (reads frames across fragmented/coalesced TCP reads).
+  - `lib/src/tcp_tunnel_hub.dart`: `TunnelHub`.
+  - `lib/src/tcp_tunnel_agent.dart`: `TunnelServerAgent` (publish) and
+    `TunnelClientAgent` (connect).
+- `lib/src/tcp_tunnel_base.dart`: added `SocketAsync.adopt(FramedConnection)` to
+  hand a connection off from the framed handshake to raw piping by reusing the
+  existing single subscription (no re-listen) and replaying leftover bytes.
+- CLI: new `hub`, `publish`, and `connect` modes. Existing `local`, `bridge`,
+  and `client` modes are unchanged.
+- Activation uses an explicit `ACTIVATE`/`READY` barrier so server-speaks-first
+  protocols (MySQL/SSH/SMTP banners) work and in-flight keepalive frames never
+  leak into the raw stream.
+- Not included (same posture as before): encryption/TLS, authentication,
+  dynamic public-port allocation, client-specified target addressing.
+
 ## 1.0.2
 
 - `lib/src/tcp_tunnel_base.dart`:

@@ -163,6 +163,91 @@ private MySQL port `3306`.
   mysql -u myuser -p
   ```
 
+## Hub Mode
+
+In addition to the raw modes above, `tcp_tunnel` provides a **hub**: a single
+public server that lets a private service (with only an internal LAN IP) be
+reached by consumers in other networks — even when **both** ends are fully
+behind NAT.
+
+Three roles are involved:
+
+- **Hub** — a public process everyone dials *out* to. It never initiates
+  connections, so it works regardless of NAT on the agents.
+- **Server agent (`publish`)** — runs inside the LAN where the service lives. It
+  registers a **named service** (e.g. `mysql` → `127.0.0.1:3306`) and keeps a
+  pre-warmed pool of parked connections at the hub. Consumers only reference the
+  service **name**; they never need to know internal addresses.
+- **Consumer** — reaches the service in one of two modes (both can be used at the
+  same time against the same published service):
+
+### Mode 1 — Public port mode
+
+The hub binds a **public TCP port** mapped to a service; a plain TCP client
+connects straight to it, no agent required.
+
+```
+plain TCP client ──► hub:13306 (=service "mysql") ──► parked server conn ──► 127.0.0.1:3306 in LAN
+```
+
+```shell
+# On the public host:
+tcp_tunnel hub --control-port 7000 --map mysql=13306
+
+# Inside the private LAN (where MySQL runs):
+tcp_tunnel publish --hub hub.domain:7000 --service mysql --target 127.0.0.1:3306 --pool 4
+
+# Any consumer, anywhere:
+mysql -u myuser -p -h hub.domain -P 13306
+```
+
+The public port can also be **dynamically allocated** by the OS instead of fixed:
+
+```shell
+# Dynamic port for a single named service (the chosen port is logged on startup):
+tcp_tunnel hub --control-port 7000 --map mysql=.
+
+# Dynamic port for ANY published service (each service gets a port the first
+# time a `publish` agent registers it; the chosen port is logged):
+tcp_tunnel hub --control-port 7000 --map-dynamic
+```
+
+To stay compatible with firewall filters, dynamically allocated ports can be
+constrained to an inclusive range with `--port-range` (open the same range in
+the firewall). It applies to both `--map svc=.` and `--map-dynamic`:
+
+```shell
+tcp_tunnel hub --control-port 7000 --map-dynamic --port-range 20000-20100
+```
+
+Every command prints a short **"How to use"** block on startup describing how to
+publish to / consume from it, including any allocated public ports.
+
+### Mode 2 — Local port mode
+
+The consumer runs a **client agent** that opens a local listen port and uses the
+hub purely as a rendezvous (the hub needs no public per-service port).
+
+```
+app ──► localhost:3306 (client agent) ──► hub:7000 ──► parked server conn ──► 127.0.0.1:3306 in LAN
+```
+
+```shell
+# On the public host:
+tcp_tunnel hub --control-port 7000
+
+# Inside the private LAN (where MySQL runs):
+tcp_tunnel publish --hub hub.domain:7000 --service mysql --target 127.0.0.1:3306 --pool 4
+
+# On the consumer machine (in yet another network):
+tcp_tunnel connect --hub hub.domain:7000 --service mysql --listen 3306
+mysql -u myuser -p -h localhost -P 3306
+```
+
+The handshake is a tiny length-prefixed control frame consumed before the
+connection switches to raw piping, so the data path stays a pure raw tunnel.
+Server-speaks-first protocols (MySQL/SSH/SMTP banners) are supported.
+
 ## Security
 
 Please be aware that the tunnel communication is **NOT encrypted**,

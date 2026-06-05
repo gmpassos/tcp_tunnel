@@ -4,6 +4,8 @@ import 'dart:typed_data';
 
 import 'package:logging/logging.dart' as logging;
 
+import 'tcp_tunnel_protocol.dart';
+
 final _log = logging.Logger('Tunnel');
 
 typedef OnSocketData = void Function(Uint8List data);
@@ -50,6 +52,19 @@ class SocketAsync {
     onConnect: onConnect,
     onFirstData: onFirstData,
   );
+
+  /// Adopts an existing [FramedConnection] (its live socket and subscription)
+  /// once its handshake phase is over, switching it to raw piping.
+  ///
+  /// The connection's single subscription is reused — its handlers are
+  /// repointed at this [SocketAsync] and any [FramedConnection.takeLeftover]
+  /// bytes (raw payload that arrived coalesced with the last frame) are replayed
+  /// in order. The socket is never re-listened (which a single-subscription
+  /// [Socket] forbids).
+  factory SocketAsync.adopt(
+    FramedConnection conn, {
+    OnSocketData? onFirstData,
+  }) => SocketAsync._(onFirstData: onFirstData).._adoptFramed(conn);
 
   factory SocketAsync.unresolved(
     Future<Socket> socketResolver, {
@@ -123,6 +138,41 @@ class SocketAsync {
 
     if (onConnect != null) {
       onConnect(skt);
+    }
+
+    _flushData();
+  }
+
+  void _adoptFramed(FramedConnection conn) {
+    final skt = conn.socket;
+    _socket = skt;
+
+    try {
+      _address = skt.address.address;
+      _remoteAddress = skt.remoteAddress.address;
+      _port = skt.port;
+    } catch (_) {}
+
+    conn.markAdopted();
+    final subscription = _subscription = conn.subscription;
+
+    if (isClosed) {
+      skt.close();
+      return;
+    }
+
+    // Reuse the connection's live subscription instead of re-listening: repoint
+    // its handlers at this [SocketAsync]. The subscription was created in the
+    // guarded zone by [FramedConnection], so callbacks stay guarded.
+    subscription
+      ..onData(_onData)
+      ..onError((e) => closeAsync())
+      ..onDone(closeAsync);
+
+    // Replay bytes already read past the handshake before piping begins.
+    final leftover = conn.takeLeftover();
+    if (leftover.isNotEmpty) {
+      _onData(leftover);
     }
 
     _flushData();
