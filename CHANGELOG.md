@@ -1,3 +1,71 @@
+## 1.0.3
+
+- `lib/src/tcp_tunnel_base.dart`:
+  - Added end-to-end backpressure: `SocketAsync` now owns its stream
+    subscription and pauses reading until the destination's flush completes,
+    preventing unbounded memory growth when one peer is slower than the other.
+  - Connection failures no longer hang: `SocketAsync.unresolved` closes on a
+    failed connect, and `close()` now always notifies `onClose` even when the
+    socket was never resolved.
+  - `Tunnel.connectAsync`: a failed target connection now closes the tunnel
+    (and fires `onClose`) instead of hanging forever.
+  - Removed a dead `Socket.handleError(...)` handler whose result was discarded;
+    error handling lives in the subscription's `onError`.
+  - Added `Tunnel.pair(SocketAsync, SocketAsync)` factory; `withSockets` and
+    `targetPort` now delegate to it.
+  - `Tunnel.targetPort` now returns `Future<Tunnel?>` and destroys the inbound
+    socket when the target connection fails.
+  - Verbose data logging now logs byte counts instead of `latin1`-decoding
+    payloads; removed the now-unused `dart:convert` import.
+
+- `bin/tcp_tunnel.dart`:
+  - Fixed `_withFlag` to correctly detect single-dash flags.
+  - `_parseMaxTunnels`: added lower bound check to ensure minimum value of 1.
+  - Added graceful shutdown: `SIGINT`/`SIGTERM` now close active servers and
+    tunnels before exiting (`SIGTERM` skipped on Windows).
+
+- `lib/src/tcp_tunnel_bridge.dart`:
+  - Changed `_server1` and `_server2` fields to nullable `ServerSocket?`.
+  - Added null-aware calls to `_server1?.close()` and `_server2?.close()` in `close()`.
+  - Queues now hold `SocketAsync` instances; a queued socket that closes before
+    being paired is evicted via `onClose` and skipped during pairing, so it is
+    never paired into a dead tunnel.
+
+- `lib/src/tcp_tunnel_server.dart`:
+  - Changed `_server` field to nullable `ServerSocket?`.
+  - Added null-aware call to `_server?.close()` in `close()`.
+  - Updated to the nullable `Tunnel.targetPort` result (logs only on success).
+
+- `pubspec.yaml`:
+  - Updated `test` dependency from `^1.31.0` to `^1.31.1`.
+
+- `test/tcp_tunnel_test.dart`:
+  - Rewrote tests extensively:
+    - Added utility functions `freePort()`, `_wait()`.
+    - Added `RecordingServer` helper class to record socket data.
+    - Added `echoServer` helper for echoing data.
+    - Added comprehensive tests for:
+      - `TunnelLocalServer` forwarding data one and both directions.
+      - Multiple concurrent clients support.
+      - `TunnelBridge` connecting queued sockets, FIFO pairing, and close idempotency.
+      - `Tunnel.withSockets` relaying data and close notification.
+      - Full chain integration test with bridge, client tunnel, and local server.
+      - Connection failures firing `onClose` for `connect` and `connectAsync`.
+      - `connectAsync` lazy connect (target connects only after first remote data).
+      - Backpressure: large payload (4 MiB) transferred byte-for-byte.
+      - `TunnelBridge` eviction of a queued socket closed before pairing.
+      - CLI usage smoke test.
+      - `connectAsync` forwarding the first (triggering) data to the target and
+        bidirectional round-trip with `onReady` completing.
+      - `TunnelBridge` buffering data sent while a socket is queued, isolating
+        many concurrent pairs, and tearing down a peer when one side closes.
+      - `TunnelLocalServer` dropping the client when the target is unreachable.
+      - `onStart` callback, `verbose` data path, and custom `targetHost`.
+      - Edge cases: half-close drain, zero-length writes, reverse-direction
+        relay, large bidirectional transfer, and `SocketAsync` state getters.
+    - Removed old `redirectLocalPort`, `bridgePorts`, and `clientTunnel` helper functions.
+    - Improved test reliability with explicit waits and socket flushes.
+
 ## 1.0.2
 
 - `bin/tcp_tunnel.dart`:

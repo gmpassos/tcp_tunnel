@@ -16,13 +16,13 @@ class TunnelBridge {
 
   TunnelBridge(this.listenPort1, this.listenPort2, {this.verbose = false});
 
-  late final ServerSocket _server1;
-  late final ServerSocket _server2;
+  ServerSocket? _server1;
+  ServerSocket? _server2;
 
   bool _started = false;
 
-  final List<Socket> _server1SocketsQueue = <Socket>[];
-  final List<Socket> _server2SocketsQueue = <Socket>[];
+  final List<SocketAsync> _server1SocketsQueue = <SocketAsync>[];
+  final List<SocketAsync> _server2SocketsQueue = <SocketAsync>[];
 
   /// Starts the bridge.
   Future<void> start() async {
@@ -32,35 +32,46 @@ class TunnelBridge {
     final server1 = _server1 = await ServerSocket.bind('0.0.0.0', listenPort1);
     final server2 = _server2 = await ServerSocket.bind('0.0.0.0', listenPort2);
 
-    server1.listen((Socket socket) {
-      _server1SocketsQueue.add(socket);
-      _connectTunnels();
-    });
-
-    server2.listen((Socket socket) {
-      _server2SocketsQueue.add(socket);
-      _connectTunnels();
-    });
+    server1.listen((socket) => _enqueue(_server1SocketsQueue, socket));
+    server2.listen((socket) => _enqueue(_server2SocketsQueue, socket));
 
     _log.info('** Started: $this');
   }
 
+  void _enqueue(List<SocketAsync> queue, Socket socket) {
+    final socketAsync = SocketAsync.from(socket);
+    queue.add(socketAsync);
+
+    // If a queued socket closes before it is paired, evict it so it is never
+    // paired into a dead tunnel.
+    socketAsync.onClose = queue.remove;
+
+    _connectTunnels();
+  }
+
   /// Closes the bridge.
   void close() {
-    _server1.close();
-    _server2.close();
+    _server1?.close();
+    _server2?.close();
   }
 
   void _connectTunnels() {
-    if (_server1SocketsQueue.isEmpty || _server2SocketsQueue.isEmpty) return;
+    while (_server1SocketsQueue.isNotEmpty && _server2SocketsQueue.isNotEmpty) {
+      var socket1 = _server1SocketsQueue.removeAt(0);
+      if (socket1.isClosed) continue;
 
-    var socket1 = _server1SocketsQueue.removeAt(0);
-    var socket2 = _server2SocketsQueue.removeAt(0);
+      var socket2 = _server2SocketsQueue.removeAt(0);
+      if (socket2.isClosed) {
+        // Put socket1 back; it still needs a peer.
+        _server1SocketsQueue.insert(0, socket1);
+        continue;
+      }
 
-    var tunnel = Tunnel.withSockets(socket1, socket2, verbose: verbose);
+      var tunnel = Tunnel.pair(socket1, socket2, verbose: verbose);
 
-    if (verbose) {
-      _log.info('-- Connected: $tunnel');
+      if (verbose) {
+        _log.info('-- Connected: $tunnel');
+      }
     }
   }
 

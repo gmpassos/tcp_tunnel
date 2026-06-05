@@ -1,6 +1,6 @@
 name: tcp_tunnel
 description: A minimalistic TCP tunnel library, entirely written in Dart, and equipped with a user-friendly Command Line Interface (CLI) for seamless usage across diverse platforms.
-version: 1.0.2
+version: 1.0.3
 repository: https://github.com/gmpassos/tcp_tunnel
 
 environment:
@@ -15,4 +15,4 @@ dependencies:
 dev_dependencies:
   lints: ^6.1.0
   dependency_validator: ^5.0.5
-  test: ^1.31.0
+  test: ^1.31.1

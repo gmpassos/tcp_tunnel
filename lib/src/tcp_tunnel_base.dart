@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
@@ -58,7 +57,15 @@ class SocketAsync {
     OnSocketData? onFirstData,
   }) {
     var socket = SocketAsync._(onFirstData: onFirstData);
-    socketResolver.then((skt) => socket._setSocket(skt, onConnect));
+    socketResolver.then(
+      (skt) => socket._setSocket(skt, onConnect),
+      // A failed connection must not hang: close so [onClose] fires and any
+      // reconnect/loop logic can proceed.
+      onError: (e, s) {
+        _log.warning('** Socket resolve error: $e', e, s);
+        socket.close();
+      },
+    );
     return socket;
   }
 
@@ -83,6 +90,14 @@ class SocketAsync {
   /// The [socket] port.
   int get port => _port!;
 
+  StreamSubscription<Uint8List>? _subscription;
+
+  /// Inbound data received before a [listen] consumer is attached.
+  final List<Uint8List> _inBuffer = <Uint8List>[];
+
+  /// `true` while [_subscription] is paused because there is no consumer yet.
+  bool _pausedNoConsumer = false;
+
   void _setSocket(Socket skt, OnConnectSocket? onConnect) {
     _socket = skt;
 
@@ -97,16 +112,14 @@ class SocketAsync {
       return;
     }
 
-    //skt.
-
-    skt.handleError((e) {
-      close();
+    _zoneGuarded.runGuarded(() {
+      _subscription = skt.listen(
+        _onData,
+        onError: (e) => closeAsync(),
+        onDone: closeAsync,
+        cancelOnError: true,
+      );
     });
-
-    var listener = _listener;
-    if (listener != null) {
-      _registerListener(listener);
-    }
 
     if (onConnect != null) {
       onConnect(skt);
@@ -115,44 +128,61 @@ class SocketAsync {
     _flushData();
   }
 
-  void Function(Uint8List data)? _listener;
+  void _onData(Uint8List data) {
+    var onFirstData = _onFirstData;
+    if (onFirstData != null) {
+      _onFirstData = null;
+      onFirstData(data);
+    }
 
-  void listen(void Function(Uint8List data) listener) {
+    var listener = _listener;
+    if (listener != null) {
+      _deliver(listener, data);
+    } else {
+      // No consumer yet: buffer and stop reading to bound memory. Reading
+      // resumes when [listen] attaches a consumer.
+      _inBuffer.add(Uint8List.fromList(data));
+      if (!_pausedNoConsumer) {
+        _pausedNoConsumer = true;
+        _subscription?.pause();
+      }
+    }
+  }
+
+  /// Delivers [data] to [listener], applying backpressure: if the listener
+  /// returns a [Future] (e.g. the destination socket's flush), reading is
+  /// paused until it completes, so a slow peer cannot cause unbounded buffering.
+  void _deliver(
+    FutureOr<Object?> Function(Uint8List data) listener,
+    Uint8List data,
+  ) {
+    var r = listener(data);
+    if (r is Future) {
+      _subscription?.pause(r);
+    }
+  }
+
+  FutureOr<Object?> Function(Uint8List data)? _listener;
+
+  void listen(FutureOr<Object?> Function(Uint8List data) listener) {
     if (_listener != null) {
       throw StateError("Already listening!");
     }
 
     _listener = listener;
 
-    var socket = _socket;
-    if (socket != null) {
-      _registerListener(listener);
-    }
-  }
-
-  void _registerListener(void Function(Uint8List data) listener) {
-    var resolvedListener = listener;
-
-    if (_onFirstData != null) {
-      resolvedListener = (data) {
-        var onFirstData = _onFirstData;
-        if (onFirstData != null) {
-          onFirstData(data);
-          _onFirstData = null;
-        }
-
-        listener(data);
-      };
+    if (_inBuffer.isNotEmpty) {
+      var buffered = List<Uint8List>.of(_inBuffer);
+      _inBuffer.clear();
+      for (var data in buffered) {
+        _deliver(listener, data);
+      }
     }
 
-    _zoneGuarded.runGuarded(() {
-      _socket!.listen(
-        resolvedListener,
-        onError: (e) => closeAsync(),
-        onDone: closeAsync,
-        cancelOnError: true,
-      );
-    });
+    if (_pausedNoConsumer) {
+      _pausedNoConsumer = false;
+      _subscription?.resume();
+    }
   }
 
   List<int>? _unflushedData;
@@ -204,20 +234,24 @@ class SocketAsync {
   bool get isClosed => _closed;
 
   /// Closes the [socket] (if resolved).
+  ///
+  /// [onClose] is always notified, even if the [socket] was never resolved
+  /// (e.g. a connection that failed), so callers waiting on closure are not
+  /// left hanging.
   void close() {
     if (_closed) return;
     _closed = true;
 
     _log.info("** Closing socket: $this");
 
+    _subscription?.cancel();
+
     var socket = _socket;
-    if (socket == null) return;
-
-    _zoneGuarded.runGuarded(() {
-      socket.close();
-    });
-
-    _log.info("** Closed socket: $this");
+    if (socket != null) {
+      _zoneGuarded.runGuarded(() {
+        socket.close();
+      });
+    }
 
     var onClose = this.onClose;
     if (onClose != null) {
@@ -284,10 +318,16 @@ class Tunnel {
       remoteHost,
       remotePort,
       onFirstData: (_) {
-        Socket.connect(
-          targetHost,
-          targetPort,
-        ).then((socket2) => socket2Completer.complete(socket2));
+        Socket.connect(targetHost, targetPort).then(
+          socket2Completer.complete,
+          // If the target is unreachable, surface the error to [socket2] so the
+          // tunnel closes (and [onClose] fires) instead of hanging forever.
+          onError: (e, s) {
+            if (!socket2Completer.isCompleted) {
+              socket2Completer.completeError(e, s);
+            }
+          },
+        );
       },
     );
 
@@ -301,9 +341,12 @@ class Tunnel {
       verbose: verbose,
     );
 
-    socket2Completer.future.then((_) {
-      Future.microtask(() => tunnel._notifyTunnelReady());
-    });
+    socket2Completer.future.then(
+      (_) => Future.microtask(tunnel._notifyTunnelReady),
+      // The error already closes [socket2] (via its resolver), which closes the
+      // tunnel; swallow here so it is not an unhandled async error.
+      onError: (_) {},
+    );
 
     return tunnel;
   }
@@ -350,20 +393,30 @@ class Tunnel {
     return tunnel;
   }
 
-  static Future<Tunnel> targetPort(
+  static Future<Tunnel?> targetPort(
     Socket socketA,
     int targetPort, {
     String targetHost = 'localhost',
     bool verbose = false,
   }) async {
-    final socketB = await Socket.connect(targetHost, targetPort);
-    final tunnel = Tunnel(
+    final Socket socketB;
+    try {
+      socketB = await Socket.connect(targetHost, targetPort);
+    } catch (e, s) {
+      _log.warning(
+        '** Error connecting target $targetHost:$targetPort: $e',
+        e,
+        s,
+      );
+      socketA.destroy();
+      return null;
+    }
+
+    return Tunnel.pair(
       SocketAsync.from(socketA),
       SocketAsync.from(socketB),
       verbose: verbose,
     );
-    tunnel._notifyTunnelReady();
-    return tunnel;
   }
 
   /// Creates a tunnel with [socketA] and [socketB].
@@ -373,10 +426,25 @@ class Tunnel {
     TunnelCallback? onStart,
     TunnelCallback? onClose,
     bool verbose = false,
+  }) => Tunnel.pair(
+    SocketAsync.from(socketA),
+    SocketAsync.from(socketB),
+    onStart: onStart,
+    onClose: onClose,
+    verbose: verbose,
+  );
+
+  /// Creates a ready tunnel from two [SocketAsync] instances.
+  factory Tunnel.pair(
+    SocketAsync socketA,
+    SocketAsync socketB, {
+    TunnelCallback? onStart,
+    TunnelCallback? onClose,
+    bool verbose = false,
   }) {
     final tunnel = Tunnel(
-      SocketAsync.from(socketA),
-      SocketAsync.from(socketB),
+      socketA,
+      socketB,
       onStart: onStart,
       onClose: onClose,
       verbose: verbose,
@@ -411,18 +479,20 @@ class Tunnel {
 
       _socketA.listen((Uint8List data) {
         if (verbose) {
-          _log.fine('[DATA-A] <<<${latin1.decode(data)}>>>');
+          _log.fine('[DATA-A] ${data.length} bytes');
         }
         _socketB.add(data);
-        //_socketB.flush();
+        // Returning the flush future applies backpressure on socket A.
+        return _socketB.flush();
       });
 
       _socketB.listen((Uint8List data) {
         if (verbose) {
-          _log.fine('[DATA-B] <<<${latin1.decode(data)}>>>');
+          _log.fine('[DATA-B] ${data.length} bytes');
         }
         _socketA.add(data);
-        //_socketA.flush();
+        // Returning the flush future applies backpressure on socket B.
+        return _socketA.flush();
       });
     });
 

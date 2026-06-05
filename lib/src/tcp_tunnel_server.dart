@@ -26,7 +26,7 @@ class TunnelLocalServer {
     this.verbose = false,
   });
 
-  late final ServerSocket _server;
+  ServerSocket? _server;
 
   bool _started = false;
 
@@ -38,13 +38,16 @@ class TunnelLocalServer {
     final server = _server = await ServerSocket.bind('0.0.0.0', listenPort);
 
     server.listen((Socket socket) {
-      var tunnel = Tunnel.targetPort(
+      Tunnel.targetPort(
         socket,
         targetPort,
         targetHost: targetHost,
         verbose: verbose,
-      );
-      _log.info("-- Connected: $tunnel");
+      ).then((tunnel) {
+        if (tunnel != null) {
+          _log.info("-- Connected: $tunnel");
+        }
+      });
     });
 
     _log.info('** Started: $this');
@@ -52,7 +55,7 @@ class TunnelLocalServer {
 
   /// Closes the tunnel server.
   void close() {
-    _server.close();
+    _server?.close();
   }
 
   @override

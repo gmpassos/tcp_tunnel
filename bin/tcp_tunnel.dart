@@ -23,15 +23,38 @@ void main(List<String> args) {
 
   _configureLogging(level: verbose ? logging.Level.ALL : logging.Level.INFO);
 
+  _setupGracefulShutdown();
+
   Tunnel.runGuarded(() {
     _run(mode, args, loop, verbose);
   });
 }
 
+/// Actions to run on shutdown (close active servers/tunnels).
+final _shutdownActions = <void Function()>[];
+
+void _setupGracefulShutdown() {
+  void shutdown(ProcessSignal signal) {
+    print('\n-- Received $signal, shutting down...');
+    for (var action in _shutdownActions) {
+      try {
+        action();
+      } catch (_) {}
+    }
+    exit(0);
+  }
+
+  ProcessSignal.sigint.watch().listen(shutdown);
+  // SIGTERM is not supported on Windows.
+  if (!Platform.isWindows) {
+    ProcessSignal.sigterm.watch().listen(shutdown);
+  }
+}
+
 bool _withFlag(List<String> args, String flag) {
   var idx = args.indexWhere((a) {
     a = a.trim().toLowerCase();
-    return a == flag || a == '--$flag' || a == '--$flag';
+    return a == flag || a == '-$flag' || a == '--$flag';
   });
 
   if (idx >= 0) {
@@ -69,12 +92,14 @@ void _run(String mode, List<String> args, bool loop, bool verbose) {
     print('-- Target host: $targetHost');
     print('-- Verbose: $verbose');
 
-    TunnelLocalServer(
+    var localServer = TunnelLocalServer(
       listenPort,
       targetPort,
       targetHost: targetHost,
       verbose: verbose,
-    ).start();
+    );
+    _shutdownActions.add(localServer.close);
+    localServer.start();
   } else if (mode == 'client') {
     var remoteHost = args[0];
     var remotePort = int.parse(args[1]);
@@ -90,6 +115,12 @@ void _run(String mode, List<String> args, bool loop, bool verbose) {
     print('-- Max tunnels: $maxTunnels');
     print('-- Parallel connections: $parallels');
     print('-- Verbose: $verbose');
+
+    _shutdownActions.add(() {
+      for (var tunnel in _tunnels.toList()) {
+        tunnel.close();
+      }
+    });
 
     for (var i = 0; i < parallels; ++i) {
       _runModeClient(
@@ -109,7 +140,9 @@ void _run(String mode, List<String> args, bool loop, bool verbose) {
     print('-- Listen port 2: $listenPort2');
     print('-- Verbose: $verbose');
 
-    TunnelBridge(listenPort1, listenPort2, verbose: verbose).start();
+    var bridge = TunnelBridge(listenPort1, listenPort2, verbose: verbose);
+    _shutdownActions.add(bridge.close);
+    bridge.start();
   } else {
     print('** Unknown mode: $mode');
     exit(1);
@@ -117,10 +150,12 @@ void _run(String mode, List<String> args, bool loop, bool verbose) {
 }
 
 int _parseMaxTunnels(List<String> args, {int defaultValue = 4}) {
-  return _parseArgInt(args, [
+  var maxTunnels = _parseArgInt(args, [
     '--max-tunnels',
     '--maxtunnels',
   ], defaultValue: defaultValue);
+  // Ensure a sane lower bound so downstream `clamp` calls stay valid.
+  return maxTunnels < 1 ? 1 : maxTunnels;
 }
 
 int _parseParallels(List<String> args, int maxTunnels, {int defaultValue = 2}) {
