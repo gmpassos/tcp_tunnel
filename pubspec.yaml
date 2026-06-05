@@ -6,6 +6,11 @@ repository: https://github.com/gmpassos/tcp_tunnel
 environment:
   sdk: '>=3.10.0 <4.0.0'
 
+# Throwaway self-signed localhost certificate used only by the security tests
+# (its CA private key was discarded after signing); not a real secret.
+false_secrets:
+  - /test/certs/key.pem
+
 executables:
   tcp_tunnel:
 
