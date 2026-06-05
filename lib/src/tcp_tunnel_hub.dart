@@ -120,6 +120,18 @@ class TunnelHub {
   /// this is reaped.
   final Duration parkedIdleTimeout;
 
+  /// When non-null, the control port speaks TLS: each accepted agent connection
+  /// is upgraded with [SecureSocket.secureServer] using this context (which must
+  /// carry the hub's certificate chain and private key) before its handshake is
+  /// read. Encrypts both the control frames and the raw-piped payload that
+  /// crosses the network. When null, the control port stays plaintext.
+  final SecurityContext? securityContext;
+
+  /// When non-null, agents must present this shared secret in their HELLO
+  /// [Frame.token] to register; mismatches are rejected. Pair it with
+  /// [securityContext] so the token is not exposed on the wire.
+  final String? authToken;
+
   final bool verbose;
 
   TunnelHub(
@@ -129,6 +141,8 @@ class TunnelHub {
     this.dynamicPortRange,
     this.clientWaitTimeout = const Duration(seconds: 10),
     this.parkedIdleTimeout = const Duration(seconds: 60),
+    this.securityContext,
+    this.authToken,
     this.verbose = false,
   }) : servicePorts = Map.unmodifiable(servicePorts ?? const {});
 
@@ -171,7 +185,12 @@ class TunnelHub {
       '0.0.0.0',
       controlPort,
     );
-    controlServer.listen(_onControlSocket);
+    // Accept inside the guarded zone so a stray socket error during the TLS
+    // handshake or a REJECT/close teardown is logged, not left unhandled (it
+    // would otherwise surface in whatever zone called [start]).
+    Tunnel.zoneGuarded.run(
+      () => controlServer.listen((socket) => _onControlSocket(socket)),
+    );
 
     for (var entry in servicePorts.entries) {
       // A configured port of 0 means "allocate dynamically".
@@ -186,8 +205,22 @@ class TunnelHub {
     _log.info('** Started: $this');
   }
 
-  /// Handles a connection on the control port: reads its HELLO and routes it.
-  void _onControlSocket(Socket socket) {
+  /// Handles a connection on the control port: optionally completes a TLS
+  /// handshake, then reads its HELLO and routes it.
+  Future<void> _onControlSocket(Socket socket) async {
+    final ctx = securityContext;
+    if (ctx != null) {
+      try {
+        socket = await SecureSocket.secureServer(socket, ctx);
+      } catch (e, s) {
+        _log.warning('** TLS handshake failed: $e', e, s);
+        try {
+          socket.destroy();
+        } catch (_) {}
+        return;
+      }
+    }
+
     final conn = FramedConnection(socket, zone: Tunnel.zoneGuarded);
 
     conn.readFrame().then(
@@ -206,6 +239,8 @@ class TunnelHub {
           return;
         }
 
+        if (!_authenticate(conn, frame)) return;
+
         if (role == 'server') {
           _registerServer(service, conn, requestedPublicPort: frame.publicPort);
         } else if (role == 'client') {
@@ -220,6 +255,25 @@ class TunnelHub {
         conn.close();
       },
     );
+  }
+
+  /// Verifies the HELLO's token against [authToken] (when configured). On
+  /// failure, rejects the agent with a REJECT frame, closes [conn], and returns
+  /// `false`. Returns `true` when authentication is disabled or succeeds.
+  bool _authenticate(FramedConnection conn, Frame frame) {
+    final expected = authToken;
+    if (expected == null) return true;
+
+    final presented = frame.token;
+    if (presented == null || !constantTimeEquals(presented, expected)) {
+      _log.warning(
+        '** Rejecting "${frame.service}" (${frame.role}): authentication failed',
+      );
+      conn.writeFrame(Frame.reject('authentication failed'));
+      conn.close();
+      return false;
+    }
+    return true;
   }
 
   /// Handles a public port mode plain TCP client on a public service port.

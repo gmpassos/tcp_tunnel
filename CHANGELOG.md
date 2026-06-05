@@ -1,3 +1,26 @@
+## 2.1.0
+
+- **Security layer for hub-mode connections (opt-in, two independent layers):**
+  - **TLS** on the agent↔hub links. The hub can serve its control port over TLS
+    (`hub --tls-cert <pem> --tls-key <pem>` / `TunnelHub.securityContext`); each
+    accepted connection is upgraded with `SecureSocket.secureServer` before its
+    handshake. Agents connect over TLS with `publish`/`connect --tls`, trusting a
+    custom CA with `--tls-ca <pem>` or accepting any certificate (dev only) with
+    `--tls-insecure` (`TunnelServerAgent`/`TunnelClientAgent.securityContext` and
+    `onBadCertificate`). Encrypts both the control frames and the raw-piped
+    payload as it crosses the network. No new dependency — `dart:io` TLS.
+  - **Shared-secret authentication.** Agents present a token in their `HELLO`,
+    constant-time compared by the hub (`TunnelHub.authToken`,
+    `TunnelServerAgent`/`TunnelClientAgent.authToken`); a mismatch is rejected
+    with a `REJECT` frame. The token is resolved (in priority order) from
+    `--token-file <path>` (keeps it out of shell history and the process arg
+    list), the `TCP_TUNNEL_TOKEN` env var, or `--token <secret>`. The `HELLO`
+    frame now carries an optional `token` field; adds `constantTimeEquals`.
+  - Both layers are optional and independent; existing plaintext deployments are
+    unaffected. The hub's control-accept loop now runs in the guarded zone so a
+    stray socket error during a TLS handshake or rejection teardown is logged
+    rather than left unhandled.
+
 ## 2.0.1
 
 - `publish` can request a public port from the hub (default off):
