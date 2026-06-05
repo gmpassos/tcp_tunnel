@@ -212,6 +212,14 @@ tcp_tunnel hub --control-port 7000 --map mysql=.
 tcp_tunnel hub --control-port 7000 --map-dynamic
 ```
 
+To stay compatible with firewall filters, dynamically allocated ports can be
+constrained to an inclusive range with `--port-range` (open the same range in
+the firewall). It applies to both `--map svc=.` and `--map-dynamic`:
+
+```shell
+tcp_tunnel hub --control-port 7000 --map-dynamic --port-range 20000-20100
+```
+
 Every command prints a short **"How to use"** block on startup describing how to
 publish to / consume from it, including any allocated public ports.
 

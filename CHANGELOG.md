@@ -7,6 +7,8 @@
     (`--map svc=port`); plain TCP clients connect directly. The port may be
     dynamically allocated with `--map svc=.` (per service) or `--map-dynamic`
     (auto-allocate a port for any published service); the chosen port is logged.
+    Dynamic allocation can be constrained to a firewall-friendly range via
+    `--port-range start-end` (`TunnelHub.dynamicPortRange` / `PortRange`).
   - **Mode 2 — local port mode:** a client agent opens a local listen port and
     uses the hub purely as a rendezvous (no public per-service port needed).
 - Every CLI command prints a "How to use" block on startup explaining how to

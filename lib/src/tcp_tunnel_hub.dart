@@ -8,6 +8,36 @@ import 'tcp_tunnel_protocol.dart';
 
 final _log = logging.Logger('TunnelHub');
 
+/// An inclusive TCP port range `[start, end]`.
+///
+/// Used to constrain dynamically allocated public ports so they stay within a
+/// range that a firewall is configured to allow.
+class PortRange {
+  final int start;
+  final int end;
+
+  const PortRange(this.start, this.end)
+    : assert(start > 0 && start <= 65535, 'start out of range'),
+      assert(end >= start && end <= 65535, 'end out of range');
+
+  /// Parses a `start-end` (or single `port`) string, e.g. `20000-20100`.
+  factory PortRange.parse(String spec) {
+    final dash = spec.indexOf('-');
+    if (dash < 0) {
+      final p = int.parse(spec.trim());
+      return PortRange(p, p);
+    }
+    final start = int.parse(spec.substring(0, dash).trim());
+    final end = int.parse(spec.substring(dash + 1).trim());
+    return PortRange(start, end);
+  }
+
+  bool contains(int port) => port >= start && port <= end;
+
+  @override
+  String toString() => start == end ? '$start' : '$start-$end';
+}
+
 /// A parked server-agent connection awaiting a client to serve.
 class _ParkedServer {
   final FramedConnection conn;
@@ -72,6 +102,11 @@ class TunnelHub {
   /// recorded in [boundPorts].
   final bool dynamicPublicPorts;
 
+  /// Restricts dynamically allocated public ports (a `--map svc=.` entry or a
+  /// [dynamicPublicPorts] service) to this inclusive range, for compatibility
+  /// with firewall filters. When `null`, the OS picks any free ephemeral port.
+  final PortRange? dynamicPortRange;
+
   /// How long a waiting client is held before being closed when no parked
   /// server connection is available (service offline / pool exhausted).
   final Duration clientWaitTimeout;
@@ -86,6 +121,7 @@ class TunnelHub {
     this.controlPort, {
     Map<String, int>? servicePorts,
     this.dynamicPublicPorts = false,
+    this.dynamicPortRange,
     this.clientWaitTimeout = const Duration(seconds: 10),
     this.parkedIdleTimeout = const Duration(seconds: 60),
     this.verbose = false,
@@ -104,6 +140,10 @@ class TunnelHub {
   /// Services whose dynamic public port is currently being bound, to avoid
   /// allocating twice when multiple agents register the same service at once.
   final Set<String> _allocatingDynamic = {};
+
+  /// Ports within [dynamicPortRange] already handed out, so a subsequent
+  /// allocation skips them instead of re-failing on the same taken port.
+  final Set<int> _rangeAllocated = {};
 
   /// Resolved public port for each service (after [start]). A dynamically
   /// allocated port (requested as `0`) appears here as its concrete value.
@@ -129,15 +169,11 @@ class TunnelHub {
     controlServer.listen(_onControlSocket);
 
     for (var entry in servicePorts.entries) {
-      final service = entry.key;
-      final port = entry.value;
-      final server = await ServerSocket.bind('0.0.0.0', port);
-      server.listen((socket) => _onPublicSocket(service, socket));
-      _publicServers.add(server);
-      _boundPorts[service] = server.port;
-      final dynamicNote = port == 0 ? ' (dynamic)' : '';
-      _log.info(
-        '** Public port ${server.port}$dynamicNote -> service "$service"',
+      // A configured port of 0 means "allocate dynamically".
+      await _openPublicPort(
+        entry.key,
+        dynamic: entry.value == 0,
+        fixedPort: entry.value,
       );
     }
 
@@ -214,25 +250,73 @@ class TunnelHub {
     if (_boundPorts.containsKey(service)) return;
     if (!_allocatingDynamic.add(service)) return; // already allocating
 
-    ServerSocket.bind('0.0.0.0', 0).then(
-      (server) {
-        _allocatingDynamic.remove(service);
-        server.listen((socket) => _onPublicSocket(service, socket));
-        _publicServers.add(server);
-        _boundPorts[service] = server.port;
-        _log.info(
-          '** Public port ${server.port} (dynamic) -> service "$service"',
-        );
-      },
-      onError: (e, s) {
-        _allocatingDynamic.remove(service);
-        _log.warning(
-          '** Failed to allocate dynamic public port for "$service": $e',
-          e,
-          s,
-        );
-      },
+    _openPublicPort(
+      service,
+      dynamic: true,
+    ).whenComplete(() => _allocatingDynamic.remove(service));
+  }
+
+  /// Binds a public port for [service] and starts accepting plain TCP clients.
+  ///
+  /// When [dynamic] the port is allocated automatically — within
+  /// [dynamicPortRange] if set, otherwise an OS-chosen ephemeral port.
+  /// Otherwise [fixedPort] is bound. Returns `true` on success.
+  Future<bool> _openPublicPort(
+    String service, {
+    required bool dynamic,
+    int fixedPort = 0,
+  }) async {
+    final ServerSocket server;
+    try {
+      if (dynamic) {
+        final bound = await _bindDynamic();
+        if (bound == null) {
+          _log.severe(
+            '** No free port in range $dynamicPortRange for service "$service"',
+          );
+          return false;
+        }
+        server = bound;
+      } else {
+        server = await ServerSocket.bind('0.0.0.0', fixedPort);
+      }
+    } catch (e, s) {
+      _log.severe('** Failed to bind public port for "$service": $e', e, s);
+      return false;
+    }
+
+    server.listen((socket) => _onPublicSocket(service, socket));
+    _publicServers.add(server);
+    _boundPorts[service] = server.port;
+    _log.info(
+      '** Public port ${server.port}${dynamic ? ' (dynamic)' : ''} '
+      '-> service "$service"',
     );
+    return true;
+  }
+
+  /// Binds a dynamically allocated [ServerSocket], honoring [dynamicPortRange].
+  ///
+  /// With no range, the OS picks any free ephemeral port. With a range, the
+  /// first free port in `[start, end]` (skipping ports already handed out) is
+  /// used; returns `null` if the range is exhausted.
+  Future<ServerSocket?> _bindDynamic() async {
+    final range = dynamicPortRange;
+    if (range == null) {
+      return ServerSocket.bind('0.0.0.0', 0);
+    }
+
+    for (var port = range.start; port <= range.end; port++) {
+      if (_rangeAllocated.contains(port)) continue;
+      try {
+        final server = await ServerSocket.bind('0.0.0.0', port);
+        _rangeAllocated.add(port);
+        return server;
+      } catch (_) {
+        // Port unavailable (in use by us or another process): try the next.
+      }
+    }
+    return null;
   }
 
   /// Reads keepalive frames from a parked conn until it is taken or closes.

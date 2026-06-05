@@ -257,6 +257,75 @@ void main() {
       await echo.close();
     });
 
+    test('dynamicPortRange bounds dynamically allocated ports', () async {
+      final echo = await EchoServer.bind();
+      final controlPort = await freePort();
+
+      // Pick a small free range starting at an ephemeral port.
+      final base = await freePort();
+      final range = PortRange(base, base + 5);
+
+      final hub = TunnelHub(
+        controlPort,
+        dynamicPublicPorts: true,
+        dynamicPortRange: range,
+      );
+      await hub.start();
+
+      // Two services should each get a distinct port within the range.
+      final a = TunnelServerAgent(
+        'localhost',
+        controlPort,
+        'a',
+        echo.port,
+        poolSize: 1,
+      );
+      final b = TunnelServerAgent(
+        'localhost',
+        controlPort,
+        'b',
+        echo.port,
+        poolSize: 1,
+      );
+      await a.start();
+      await b.start();
+
+      expect(
+        await waitFor(
+          () =>
+              hub.boundPorts.containsKey('a') &&
+              hub.boundPorts.containsKey('b'),
+        ),
+        isTrue,
+      );
+
+      final portA = hub.boundPorts['a']!;
+      final portB = hub.boundPorts['b']!;
+      expect(range.contains(portA), isTrue, reason: 'portA=$portA');
+      expect(range.contains(portB), isTrue, reason: 'portB=$portB');
+      expect(portA, isNot(portB));
+
+      // And traffic actually flows over an allocated port.
+      await _wait(100);
+      final client = await TestClient.connect(portA);
+      client.send('ranged');
+      expect(await waitFor(() => client.text == 'ranged'), isTrue);
+
+      await client.close();
+      a.close();
+      b.close();
+      hub.close();
+      await echo.close();
+    });
+
+    test('PortRange.parse handles single port and start-end', () {
+      expect(PortRange.parse('20000-20100').toString(), '20000-20100');
+      final single = PortRange.parse('20000');
+      expect(single.start, 20000);
+      expect(single.end, 20000);
+      expect(single.toString(), '20000');
+    });
+
     test('--map-dynamic: any published service gets a public port', () async {
       final echo = await EchoServer.bind();
       final controlPort = await freePort();

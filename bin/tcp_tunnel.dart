@@ -22,6 +22,9 @@ void main(List<String> args) {
       '       --map-dynamic (dynamic public port for any published service)',
     );
     print(
+      '       --port-range 20000-20100 (bound dynamic ports to a firewall-friendly range)',
+    );
+    print(
       '  \$> tcp_tunnel publish --hub %host:%port --service mysql --target 127.0.0.1:3306 --pool 4',
     );
     print(
@@ -181,22 +184,30 @@ void _run(String mode, List<String> args, bool loop, bool verbose) {
       '--port',
     ], defaultValue: 7000);
     var dynamicMap = _withFlag(args, 'map-dynamic');
+    var portRange = _parsePortRange(args);
     var servicePorts = _parseMaps(args);
 
     print('-- Control port: $controlPort');
     print('-- Service ports: $servicePorts');
     print('-- Dynamic services (--map-dynamic): $dynamicMap');
+    print('-- Dynamic port range: ${portRange ?? '(any)'}');
     print('-- Verbose: $verbose');
 
     var hub = TunnelHub(
       controlPort,
       servicePorts: servicePorts,
       dynamicPublicPorts: dynamicMap,
+      dynamicPortRange: portRange,
       verbose: verbose,
     );
     _shutdownActions.add(hub.close);
     hub.start().then(
-      (_) => _printHubUsage(controlPort, hub.boundPorts, dynamic: dynamicMap),
+      (_) => _printHubUsage(
+        controlPort,
+        hub.boundPorts,
+        dynamic: dynamicMap,
+        portRange: portRange,
+      ),
     );
   } else if (mode == 'publish') {
     var hub = _parseHostPort(args, '--hub');
@@ -307,6 +318,19 @@ Map<String, int> _parseMaps(List<String> args) {
   return map;
 }
 
+/// Parses an optional `--port-range start-end` argument.
+PortRange? _parsePortRange(List<String> args) {
+  var value = _parseArgStr(args, ['--port-range', '--portrange']);
+  if (value == null) return null;
+  try {
+    return PortRange.parse(value);
+  } catch (e) {
+    throw ArgumentError(
+      'Invalid --port-range "$value", expected start-end (e.g. 20000-20100): $e',
+    );
+  }
+}
+
 /// Prints a "How to use" block for [mode].
 void _printHowToUse(String mode, List<String> lines) {
   print('');
@@ -321,6 +345,7 @@ void _printHubUsage(
   int controlPort,
   Map<String, int> boundPorts, {
   bool dynamic = false,
+  PortRange? portRange,
 }) {
   var lines = <String>[
     'Hub control port: $controlPort (server and client agents dial in here).',
@@ -344,6 +369,12 @@ void _printHubUsage(
     lines.add(
       '--map-dynamic is ON: any published service is auto-assigned a '
       'public port (watch the log for the chosen port).',
+    );
+  }
+  if (portRange != null) {
+    lines.add(
+      'Dynamically allocated ports stay within $portRange '
+      '(open this range in your firewall).',
     );
   }
   _printHowToUse('hub', lines);
