@@ -114,6 +114,15 @@ class TunnelServerAgent {
 
   final Set<FramedConnection> _parked = {};
 
+  /// Activated hub connections whose local target is still being dialed.
+  final Set<FramedConnection> _activating = {};
+
+  /// Tunnels currently running (removed when they close).
+  final Set<Tunnel> _tunnels = {};
+
+  /// Pending reconnect (backoff) timers, cancelled by [close].
+  final Set<Timer> _backoffTimers = {};
+
   /// Starts the agent and fills the parked-connection pool.
   Future<void> start() async {
     if (_started) return;
@@ -134,7 +143,12 @@ class TunnelServerAgent {
     _liveCount--;
     if (_closed) return;
     if (backoff) {
-      Timer(reconnectDelay, _refill);
+      late final Timer timer;
+      timer = Timer(reconnectDelay, () {
+        _backoffTimers.remove(timer);
+        _refill();
+      });
+      _backoffTimers.add(timer);
     } else {
       _refill();
     }
@@ -226,7 +240,9 @@ class TunnelServerAgent {
     _log.severe('** Hub rejected publishing "$service": $msg');
 
     final cb = onPublicPortRejected;
-    close(); // stop the pool / reconnects
+    // Stop the pool / reconnects; tunnels already serving clients are left to
+    // finish (a later [close] closes them).
+    close(closeActiveTunnels: false);
     if (cb != null) cb(msg);
   }
 
@@ -253,10 +269,13 @@ class TunnelServerAgent {
 
   /// Dials the local target and pipes it to the activated hub connection.
   Future<void> _activate(FramedConnection conn, String? peer) async {
+    _activating.add(conn);
+
     final Socket target;
     try {
       target = await Socket.connect(targetHost, targetPort);
     } catch (e, s) {
+      _activating.remove(conn);
       _log.warning(
         '** Target $targetHost:$targetPort connect failed: $e',
         e,
@@ -266,12 +285,22 @@ class TunnelServerAgent {
       return;
     }
 
+    // Not in [_activating] anymore: [close] already dropped the hub
+    // connection while the target connect was pending.
+    if (!_activating.remove(conn)) return target.destroy();
+
     // READY is the last framed message; everything after it is raw payload.
     conn.writeFrame(Frame.readyFrame);
 
     final hubSide = SocketAsync.adopt(conn);
     final targetSide = SocketAsync.from(target);
-    final tunnel = Tunnel.pair(hubSide, targetSide, verbose: verbose);
+    final tunnel = Tunnel.pair(
+      hubSide,
+      targetSide,
+      onClose: _tunnels.remove,
+      verbose: verbose,
+    );
+    _tunnels.add(tunnel);
 
     _log.info(
       '-- Activated "$service" -> $targetHost:$targetPort'
@@ -280,14 +309,44 @@ class TunnelServerAgent {
     );
   }
 
-  /// Closes the agent and its idle parked connections.
-  void close() {
-    if (_closed) return;
+  /// Closes the agent: stops refilling the pool (cancelling pending reconnects),
+  /// closes its idle parked connections and, by default, every activated
+  /// connection: running tunnels and hub connections whose local target is
+  /// still being dialed (the target socket is dropped as soon as that connect
+  /// completes).
+  ///
+  /// With [closeActiveTunnels] `false` activated connections are left to finish
+  /// on their own (graceful shutdown); a later [close] call closes whatever is
+  /// still running.
+  void close({bool closeActiveTunnels = true}) {
     _closed = true;
+
+    for (var timer in _backoffTimers) {
+      timer.cancel();
+    }
+    _backoffTimers.clear();
+
     for (var conn in _parked.toList()) {
       conn.close();
     }
     _parked.clear();
+
+    if (!closeActiveTunnels) return;
+
+    // Cleared before closing, so a target connect completing later sees its
+    // hub connection already dropped.
+    final activating = _activating.toList();
+    _activating.clear();
+    for (var conn in activating) {
+      conn.close();
+    }
+
+    // Closing a tunnel removes it from [_tunnels] (via `onClose`): iterate a
+    // copy.
+    for (var tunnel in _tunnels.toList()) {
+      tunnel.close();
+    }
+    _tunnels.clear();
   }
 
   @override
@@ -343,22 +402,49 @@ class TunnelClientAgent {
   ServerSocket? _server;
   bool _started = false;
 
+  /// Set by [close]: stop accepting.
+  bool _closed = false;
+
+  /// Accepted application sockets whose hub connection is still being dialed.
+  /// [close] (unless `closeActiveTunnels` is `false`) destroys and removes
+  /// them; a hub connect completing for a removed one is dropped at once.
+  final Set<Socket> _connecting = {};
+
+  /// Tunnels currently running (removed when they close).
+  final Set<Tunnel> _tunnels = {};
+
   /// The local port actually bound (after [start]), or `null` if not started.
   /// Differs from [listenPort] when it is `0` (OS-chosen ephemeral port).
   int? get boundListenPort => _server?.port;
 
   /// Starts listening for local application connections.
+  ///
+  /// If [close] runs while the port is being bound, the bound port is released
+  /// as soon as the bind completes (and [boundListenPort] stays `null`).
   Future<void> start() async {
     if (_started) return;
     _started = true;
 
     final server = _server = await ServerSocket.bind(listenHost, listenPort);
+
+    // [close] ran while binding: release the port instead of serving.
+    if (_closed) {
+      _server = null;
+      await server.close();
+      return;
+    }
+
     server.listen(_onAppSocket);
 
     _log.info('** Started: $this');
   }
 
   Future<void> _onAppSocket(Socket appSocket) async {
+    // Accepted while [close] was running (the listener closes asynchronously).
+    if (_closed) return appSocket.destroy();
+
+    _connecting.add(appSocket);
+
     final Socket hubSocket;
     try {
       hubSocket = await _connectHub(
@@ -368,10 +454,15 @@ class TunnelClientAgent {
         onBadCertificate: onBadCertificate,
       );
     } catch (e) {
+      _connecting.remove(appSocket);
       _log.warning('** Hub connect $hubHost:$hubPort failed: $e');
       appSocket.destroy();
       return;
     }
+
+    // Not in [_connecting] anymore: [close] already dropped the app socket
+    // while the hub connect (which cannot be aborted) was pending.
+    if (!_connecting.remove(appSocket)) return hubSocket.destroy();
 
     final conn = FramedConnection(hubSocket, zone: Tunnel.zoneGuarded);
     conn.writeFrame(
@@ -380,14 +471,46 @@ class TunnelClientAgent {
 
     final hubSide = SocketAsync.adopt(conn);
     final appSide = SocketAsync.from(appSocket);
-    final tunnel = Tunnel.pair(hubSide, appSide, verbose: verbose);
+    final tunnel = Tunnel.pair(
+      hubSide,
+      appSide,
+      onClose: _tunnels.remove,
+      verbose: verbose,
+    );
+    _tunnels.add(tunnel);
 
     if (verbose) _log.info('-- Connecting "$service": $tunnel');
   }
 
-  /// Closes the local listen socket.
-  void close() {
+  /// Closes the agent: its local listen socket and, by default, every tunnel
+  /// it opened (an application connection whose hub connect is still pending
+  /// is closed at once, and the hub connection is dropped as soon as that
+  /// connect completes).
+  ///
+  /// With [closeActiveTunnels] `false` only the listener is closed and running
+  /// tunnels (and connections still dialing the hub) are left to finish on
+  /// their own (graceful shutdown); a later [close] call closes whatever is
+  /// still running.
+  void close({bool closeActiveTunnels = true}) {
+    _closed = true;
     _server?.close();
+
+    if (!closeActiveTunnels) return;
+
+    // Cleared before closing, so a hub connect completing later sees its app
+    // socket already dropped.
+    final connecting = _connecting.toList();
+    _connecting.clear();
+    for (var socket in connecting) {
+      socket.destroy();
+    }
+
+    // Closing a tunnel removes it from [_tunnels] (via `onClose`): iterate a
+    // copy.
+    for (var tunnel in _tunnels.toList()) {
+      tunnel.close();
+    }
+    _tunnels.clear();
   }
 
   @override

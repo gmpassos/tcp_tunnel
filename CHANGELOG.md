@@ -1,3 +1,33 @@
+## 2.3.1
+
+- `TunnelClientAgent.close()` now closes everything it owns, like the other
+  listeners since 2.3.0: its listening socket, every tunnel it opened and any
+  application connection whose hub connect is still pending (that hub
+  connection, which cannot be aborted, is dropped as soon as it completes). It
+  used to only stop listening, leaving tunnels running. New
+  `close(closeActiveTunnels: false)` for graceful shutdown; a later `close()`
+  closes whatever is still running. Repeated calls are no-ops.
+- `TunnelServerAgent.close()` now also closes its activated connections:
+  running tunnels and hub connections whose local target is still being dialed
+  (the target socket is dropped once that connect completes). It also cancels
+  pending reconnect timers, which kept the process alive for up to
+  `reconnectDelay`. Same `closeActiveTunnels` option. A hub `REJECT` still only
+  stops the pool and leaves active tunnels running.
+- `TunnelLocalServer`, `TunnelBridge`, `TunnelHub`, `TunnelClientAgent`: a
+  `close()` issued while `start()` was still binding left the port listening.
+  The port is now released as soon as the bind completes, and the bound port
+  getters stay `null`.
+- `TunnelHub`: the 2.3.0 fix "a pairing whose server-agent connection closes
+  before its `READY` now fails at once" did not work for public port clients.
+  Their listener ran outside the hub's guarded zone, so the activation's error
+  never reached them (a future's error is not delivered across error zones),
+  and they waited out `clientWaitTimeout`. Public ports now accept in the
+  guarded zone, like the control port.
+- Tests: `close()` of both agents (active tunnels, graceful variant,
+  idempotency, a hub connect or a target connect still pending at `close()`),
+  and `close()` during `start()` for all four listeners. All on port 0
+  listeners.
+
 ## 2.3.0
 
 - **Behaviour change — `close()` now closes everything it owns.**

@@ -54,6 +54,15 @@ class TunnelBridge {
       rethrow;
     }
 
+    // [close] ran while binding: release the ports instead of serving (the
+    // bound port getters stay `null`).
+    if (_closed) {
+      _server1 = null;
+      _server2 = null;
+      await Future.wait([server1.close(), server2.close()]);
+      return;
+    }
+
     server1.listen((socket) => _enqueue(_server1SocketsQueue, socket));
     server2.listen((socket) => _enqueue(_server2SocketsQueue, socket));
 

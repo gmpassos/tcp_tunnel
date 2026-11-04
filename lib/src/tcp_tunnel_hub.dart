@@ -232,6 +232,15 @@ class TunnelHub {
       '0.0.0.0',
       controlPort,
     );
+
+    // [close] ran while binding: release the port instead of serving
+    // ([boundControlPort] stays `null`).
+    if (_closed) {
+      _controlServer = null;
+      await controlServer.close();
+      return;
+    }
+
     // Accept inside the guarded zone so a stray socket error during the TLS
     // handshake or a REJECT/close teardown is logged, not left unhandled (it
     // would otherwise surface in whatever zone called [start]).
@@ -478,7 +487,14 @@ class TunnelHub {
     // [close] ran while binding: do not start serving a closed hub.
     if (_closed) return server.close().then((_) => false);
 
-    server.listen((socket) => _onPublicSocket(service, socket));
+    // Accept inside the guarded zone, like the control port: a pairing awaits
+    // its parked conn's `ready` future, which is completed (with an error when
+    // that conn closes before READY) from the control port's zone. A future's
+    // error is not delivered across error zones, so a listener in another zone
+    // would miss it and wait out [clientWaitTimeout].
+    Tunnel.zoneGuarded.run(
+      () => server.listen((socket) => _onPublicSocket(service, socket)),
+    );
     _publicServers.add(server);
     _boundPorts[service] = server.port;
     _log.info(
