@@ -69,6 +69,19 @@ class _ParkedServer {
   bool get isClosed => conn.isClosed;
 }
 
+/// A parked server conn being activated for a client (awaiting READY).
+class _Activation {
+  final _ParkedServer parked;
+  final _WaitingClient client;
+
+  _Activation(this.parked, this.client);
+
+  void close() {
+    parked.conn.close();
+    client.socket.close();
+  }
+}
+
 /// A client awaiting a server-agent connection.
 ///
 /// Unifies public port mode (a plain public-port socket) and local port mode (a
@@ -81,7 +94,14 @@ class _WaitingClient {
 
   _WaitingClient(this.socket, this.peer);
 
-  bool get isClosed => socket.isClosed;
+  /// Whether this client can no longer be served: closed, or it already
+  /// finished sending (EOF/error seen while waiting; it is about to close).
+  bool get isGone => socket.isClosed || socket.isInputDone;
+
+  void close() {
+    timeout?.cancel();
+    socket.close();
+  }
 }
 
 /// Per-service registry of parked server conns and waiting clients, paired FIFO.
@@ -186,6 +206,16 @@ class TunnelHub {
   int? get boundControlPort => _controlServer?.port;
 
   bool _started = false;
+  bool _closed = false;
+
+  /// Control-port connections whose HELLO has not been read yet.
+  final Set<FramedConnection> _awaitingHello = {};
+
+  /// Pairings waiting for the server agent's READY.
+  final Set<_Activation> _activations = {};
+
+  /// Paired tunnels currently running (removed when they close).
+  final Set<Tunnel> _tunnels = {};
 
   _ServiceRegistry _registry(String service) =>
       _registries.putIfAbsent(service, () => _ServiceRegistry(service));
@@ -225,8 +255,14 @@ class TunnelHub {
   /// Handles a connection on the control port: optionally completes a TLS
   /// handshake, then reads its HELLO and routes it.
   Future<void> _onControlSocket(Socket socket) async {
+    // Accepted while [close] was running (the listener closes asynchronously).
+    if (_closed) return socket.destroy();
+
     final ctx = securityContext;
     if (ctx != null) {
+      // The handshake owns (detaches) [socket] and cannot be aborted, so a
+      // connection still handshaking when [close] runs is dropped as soon as
+      // its handshake ends.
       try {
         socket = await SecureSocket.secureServer(socket, ctx);
       } catch (e, s) {
@@ -236,12 +272,17 @@ class TunnelHub {
         } catch (_) {}
         return;
       }
+      if (_closed) return socket.destroy();
     }
 
     final conn = FramedConnection(socket, zone: Tunnel.zoneGuarded);
+    _awaitingHello.add(conn);
 
     conn.readFrame().then(
       (frame) {
+        // Not in [_awaitingHello] anymore: [close] already dropped it.
+        if (!_awaitingHello.remove(conn)) return;
+
         if (frame.type != FrameType.hello) {
           _log.warning('** Expected HELLO, got ${frame.type}; closing');
           conn.close();
@@ -268,6 +309,7 @@ class TunnelHub {
         }
       },
       onError: (e, s) {
+        if (!_awaitingHello.remove(conn)) return; // dropped by [close]
         _log.warning('** Error reading HELLO: $e', e, s);
         conn.close();
       },
@@ -295,6 +337,8 @@ class TunnelHub {
 
   /// Handles a public port mode plain TCP client on a public service port.
   void _onPublicSocket(String service, Socket socket) {
+    // Accepted while [close] was running (the listener closes asynchronously).
+    if (_closed) return socket.destroy();
     _registerClient(service, SocketAsync.from(socket), _peerOf(socket));
   }
 
@@ -431,6 +475,9 @@ class TunnelHub {
       return false;
     }
 
+    // [close] ran while binding: do not start serving a closed hub.
+    if (_closed) return server.close().then((_) => false);
+
     server.listen((socket) => _onPublicSocket(service, socket));
     _publicServers.add(server);
     _boundPorts[service] = server.port;
@@ -552,8 +599,14 @@ class TunnelHub {
         _log.info('-- Reaping idle parked conn');
         conn.close();
         return;
-      } catch (_) {
-        return; // closed; onClosed already evicted it
+      } catch (e) {
+        // Closed (onClosed already evicted it, or the hub closed it). If it was
+        // being activated, fail the activation now instead of letting it wait
+        // out its timeout.
+        if (parked.taken && !parked.ready.isCompleted) {
+          parked.ready.completeError(e);
+        }
+        return;
       }
 
       switch (frame.type) {
@@ -610,40 +663,58 @@ class TunnelHub {
       if (parked.isClosed) continue;
 
       final client = reg.waiting.removeAt(0);
-      if (client.isClosed) {
+      if (client.isGone) {
+        // Disconnected while waiting (possibly after sending data, which is
+        // discarded): never pair it into a dead tunnel.
+        client.close();
+        if (verbose) {
+          _log.info('-- Dropping disconnected waiting client ${client.peer}');
+        }
         reg.parked.insert(0, parked); // server conn still needs a client
         continue;
       }
 
       parked.taken = true;
       client.timeout?.cancel();
-      _activateAndPipe(reg, parked, client);
+      _activateAndPipe(reg, _Activation(parked, client));
     }
   }
 
   /// Activates a parked server conn for [client] and raw-pipes them.
   Future<void> _activateAndPipe(
     _ServiceRegistry reg,
-    _ParkedServer parked,
-    _WaitingClient client,
+    _Activation activation,
   ) async {
+    final parked = activation.parked;
+    final client = activation.client;
     final conn = parked.conn;
 
+    _activations.add(activation);
     conn.writeFrame(Frame.activate(peer: client.peer));
 
     try {
       await parked.ready.future.timeout(clientWaitTimeout);
     } catch (e) {
       // Agent never acknowledged (died/slow): drop both ends and let the
-      // client side reconnect if it wants to.
+      // client side reconnect if it wants to. Not in [_activations] anymore:
+      // [close] already dropped it.
+      if (!_activations.remove(activation)) return;
       _log.warning('** Activation failed for "${reg.name}": $e');
-      conn.close();
-      client.socket.close();
+      activation.close();
       return;
     }
 
+    // Dropped by [close] while READY was in flight.
+    if (!_activations.remove(activation)) return activation.close();
+
     final serverSocket = SocketAsync.adopt(conn);
-    final tunnel = Tunnel.pair(serverSocket, client.socket, verbose: verbose);
+    final tunnel = Tunnel.pair(
+      serverSocket,
+      client.socket,
+      onClose: _tunnels.remove,
+      verbose: verbose,
+    );
+    _tunnels.add(tunnel);
 
     if (verbose) {
       _log.info('-- Connected "${reg.name}": ${client.peer} <-> $tunnel');
@@ -660,13 +731,59 @@ class TunnelHub {
     }
   }
 
-  /// Closes the hub and all its listening sockets.
-  void close() {
+  /// Closes the hub: its control and public listening sockets, every agent
+  /// connection whose HELLO is pending, every parked server-agent connection,
+  /// every waiting client and, by default, every active tunnel (including
+  /// pairings still being activated). A control connection still in its TLS
+  /// handshake (which cannot be aborted) is dropped when the handshake ends.
+  ///
+  /// With [closeActiveTunnels] `false` active tunnels (and pairings being
+  /// activated) are left to finish on their own (graceful shutdown); a later
+  /// [close] call closes whatever is still running.
+  void close({bool closeActiveTunnels = true}) {
+    _closed = true;
+
     _controlServer?.close();
     for (var server in _publicServers) {
       server.close();
     }
     _publicServers.clear();
+
+    // Each set/list is cleared before its members are closed, so callbacks
+    // fired by a close (e.g. a failing pending read) see them already dropped.
+    final awaitingHello = _awaitingHello.toList();
+    _awaitingHello.clear();
+    for (var conn in awaitingHello) {
+      conn.close();
+    }
+
+    for (var reg in _registries.values) {
+      final parked = reg.parked.toList();
+      final waiting = reg.waiting.toList();
+      reg.parked.clear();
+      reg.waiting.clear();
+      for (var p in parked) {
+        p.conn.close();
+      }
+      for (var c in waiting) {
+        c.close();
+      }
+    }
+
+    if (!closeActiveTunnels) return;
+
+    final activations = _activations.toList();
+    _activations.clear();
+    for (var activation in activations) {
+      activation.close();
+    }
+
+    // Closing a tunnel removes it from [_tunnels] (via `onClose`): iterate a
+    // copy.
+    for (var tunnel in _tunnels.toList()) {
+      tunnel.close();
+    }
+    _tunnels.clear();
   }
 
   @override

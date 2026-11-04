@@ -1,3 +1,55 @@
+## 2.3.0
+
+- **Behaviour change — `close()` now closes everything it owns.**
+  `TunnelLocalServer.close()`, `TunnelBridge.close()` and `TunnelHub.close()`
+  used to only stop listening, leaving already paired tunnels (and, for the
+  hub, parked server-agent connections and waiting clients) running. They now
+  close their listeners, every queued/parked/waiting connection and every
+  active tunnel (a `TunnelLocalServer` connection still connecting to its
+  target is closed as soon as that connect completes; a hub pairing still
+  being activated is closed at once).
+  - New opt-in for graceful shutdown: `close(closeActiveTunnels: false)` stops
+    listening and drops queued/parked/waiting connections but leaves active
+    tunnels to finish on their own; a later `close()` closes whatever is still
+    running. Same signature on all three classes.
+  - Connections accepted after `close()` (already in flight) are dropped. A
+    hub control connection still in its TLS handshake (which cannot be
+    aborted) is dropped as soon as the handshake ends.
+  - The CLI's SIGINT/SIGTERM shutdown uses the new `close()`, so peers see
+    their tunnels closed, and the process exits right away.
+- `TunnelHub`: fixed a waiting client that sent data and then disconnected
+  being paired with the next parked server-agent connection (its bytes reached
+  the service after it was gone). Its socket was paused as soon as it sent
+  data, which hid its EOF. A disconnected waiting client is now evicted before
+  pairing. The same applies to `TunnelBridge` queued sockets, and to a client
+  agent whose HELLO arrived together with its EOF.
+  - `SocketAsync` keeps reading while no consumer is attached, buffering up to
+    `SocketAsync.maxBufferedInput` (64 KiB), and only pauses beyond that; the
+    buffered bytes are delivered intact and in order once a consumer attaches,
+    as a single chunk (delivering several chunks back to back would `add` to
+    the destination while its previous `flush` was pending, which an `IOSink`
+    rejects, losing data). A peer that closes after filling the buffer is only
+    noticed once reading resumes (after pairing).
+  - New `SocketAsync.isInputDone`: the peer's EOF/error was seen.
+  - Note: a waiting client that half-closes (sends, then shuts down its write
+    side) is treated as disconnected and is not paired.
+- `TunnelHub`: a pairing whose server-agent connection closes before its
+  `READY` now fails at once instead of waiting out `clientWaitTimeout`.
+- `FramedConnection.close()` fails a pending `readFrame()` (with a
+  `StateError`) instead of leaving it pending forever. This also stops the
+  keepalive timer of a `TunnelServerAgent` parked connection closed by
+  `TunnelServerAgent.close()`.
+- Tests:
+  - every test listener binds port `0` and reads the real port back
+    (`boundPort`, `boundPort1`/`boundPort2`, `boundControlPort`,
+    `boundListenPort`, `ServerSocket.port`); `freePort()` (bind, release,
+    re-bind) is gone. Only ports that must stay unreachable, or must be named
+    before anything binds them (an agent-requested fixed public port, which
+    retries on a conflict, and a port range), still come from a released port;
+  - regression tests for the stale waiting client and for `close()` (the
+    pinned 2.2.1 behaviour tests were replaced);
+  - CLI: SIGINT with an active bridge tunnel closes it and exits `0` promptly.
+
 ## 2.2.1
 
 - `TunnelHub`: fixed an activation that could fail when the server agent's

@@ -6,8 +6,12 @@ import 'dart:typed_data';
 import 'package:tcp_tunnel/tcp_tunnel.dart';
 import 'package:test/test.dart';
 
-Future<int> freePort() async {
-  var s = await ServerSocket.bind('localhost', 0);
+/// A port with nothing listening on it (bound to `0`, then released). Only for
+/// tests that must name a port before anything binds it (a requested fixed
+/// public port, a port range); listeners otherwise bind port `0` and read back
+/// the port actually bound.
+Future<int> unusedPort() async {
+  var s = await ServerSocket.bind('0.0.0.0', 0);
   var port = s.port;
   await s.close();
   return port;
@@ -197,11 +201,10 @@ void main() {
       'public port mode: plain client via public port round-trips',
       () async {
         final echo = await EchoServer.bind();
-        final controlPort = await freePort();
-        final publicPort = await freePort();
-
-        final hub = TunnelHub(controlPort, servicePorts: {'svc': publicPort});
+        final hub = TunnelHub(0, servicePorts: {'svc': 0});
         await hub.start();
+        final controlPort = hub.boundControlPort!;
+        final publicPort = hub.boundPorts['svc']!;
 
         final agent = TunnelServerAgent(
           'localhost',
@@ -228,11 +231,10 @@ void main() {
     test('public port mode: dynamic port (servicePorts=0) is allocated and '
         'round-trips', () async {
       final echo = await EchoServer.bind();
-      final controlPort = await freePort();
-
       // Port 0 => OS-allocated ephemeral public port.
-      final hub = TunnelHub(controlPort, servicePorts: {'svc': 0});
+      final hub = TunnelHub(0, servicePorts: {'svc': 0});
       await hub.start();
+      final controlPort = hub.boundControlPort!;
 
       final publicPort = hub.boundPorts['svc']!;
       expect(publicPort, greaterThan(0));
@@ -259,18 +261,18 @@ void main() {
 
     test('dynamicPortRange bounds dynamically allocated ports', () async {
       final echo = await EchoServer.bind();
-      final controlPort = await freePort();
-
-      // Pick a small free range starting at an ephemeral port.
-      final base = await freePort();
+      // Pick a small range starting at a free ephemeral port. Two of its six
+      // ports are needed, and the hub skips any that happen to be taken.
+      final base = await unusedPort();
       final range = PortRange(base, base + 5);
 
       final hub = TunnelHub(
-        controlPort,
+        0,
         dynamicPublicPorts: true,
         dynamicPortRange: range,
       );
       await hub.start();
+      final controlPort = hub.boundControlPort!;
 
       // Two services each request a dynamic port; they should get distinct
       // ports within the range.
@@ -325,24 +327,38 @@ void main() {
       'publish requesting a fixed public port binds it and round-trips',
       () async {
         final echo = await EchoServer.bind();
-        final controlPort = await freePort();
-        final wantPort = await freePort();
 
-        // Plain hub: no preconfigured public ports.
-        final hub = TunnelHub(controlPort);
-        await hub.start();
+        // A fixed port must be named before it is bound, so it can be taken by
+        // someone else in between: then the hub rejects the request, and the
+        // test retries with another port (a fresh hub and agent).
+        late TunnelHub hub;
+        late TunnelServerAgent agent;
+        late int wantPort;
+        for (var attempt = 1; ; attempt++) {
+          // Plain hub: no preconfigured public ports.
+          hub = TunnelHub(0);
+          await hub.start();
+          wantPort = await unusedPort();
 
-        final agent = TunnelServerAgent(
-          'localhost',
-          controlPort,
-          'svc',
-          echo.port,
-          poolSize: 2,
-          requestPublicPort: wantPort, // agent-requested fixed public port
-        );
-        await agent.start();
+          String? rejected;
+          agent = TunnelServerAgent(
+            'localhost',
+            hub.boundControlPort!,
+            'svc',
+            echo.port,
+            poolSize: 2,
+            requestPublicPort: wantPort, // agent-requested fixed public port
+          );
+          agent.onPublicPortRejected = (r) => rejected = r;
+          await agent.start();
 
-        expect(await waitFor(() => agent.publicPort == wantPort), isTrue);
+          await waitFor(() => agent.publicPort == wantPort || rejected != null);
+          if (rejected == null || attempt == 5) break;
+          agent.close();
+          hub.close();
+        }
+
+        expect(agent.publicPort, wantPort);
         expect(hub.boundPorts['svc'], wantPort);
 
         final client = await TestClient.connect(wantPort);
@@ -358,11 +374,10 @@ void main() {
 
     test('publish requesting a dynamic public port (0) gets one', () async {
       final echo = await EchoServer.bind();
-      final controlPort = await freePort();
-
       // Dynamic requests require the hub to allow them (--map-dynamic).
-      final hub = TunnelHub(controlPort, dynamicPublicPorts: true);
+      final hub = TunnelHub(0, dynamicPublicPorts: true);
       await hub.start();
+      final controlPort = hub.boundControlPort!;
 
       final agent = TunnelServerAgent(
         'localhost',
@@ -385,11 +400,10 @@ void main() {
       'publish requesting a dynamic port is rejected without --map-dynamic',
       () async {
         final echo = await EchoServer.bind();
-        final controlPort = await freePort();
-
         // Plain hub: dynamic public ports not enabled.
-        final hub = TunnelHub(controlPort);
+        final hub = TunnelHub(0);
         await hub.start();
+        final controlPort = hub.boundControlPort!;
 
         final agent = TunnelServerAgent(
           'localhost',
@@ -417,15 +431,14 @@ void main() {
       'publish requesting an in-use port is rejected with a reason',
       () async {
         final echo = await EchoServer.bind();
-        final controlPort = await freePort();
-
         // Occupy a port on the same address the hub binds (0.0.0.0) to force a
         // deterministic bind conflict.
         final blocker = await ServerSocket.bind('0.0.0.0', 0);
         final busyPort = blocker.port;
 
-        final hub = TunnelHub(controlPort);
+        final hub = TunnelHub(0);
         await hub.start();
+        final controlPort = hub.boundControlPort!;
 
         final agent = TunnelServerAgent(
           'localhost',
@@ -455,12 +468,11 @@ void main() {
       'publish requesting a port mapped to another service is rejected',
       () async {
         final echo = await EchoServer.bind();
-        final controlPort = await freePort();
-        final sharedPort = await freePort();
-
         // Service "a" owns sharedPort (configured map).
-        final hub = TunnelHub(controlPort, servicePorts: {'a': sharedPort});
+        final hub = TunnelHub(0, servicePorts: {'a': 0});
         await hub.start();
+        final controlPort = hub.boundControlPort!;
+        final sharedPort = hub.boundPorts['a']!;
 
         // Service "b" asks for the same port -> conflict.
         final agentB = TunnelServerAgent(
@@ -486,11 +498,10 @@ void main() {
 
     test('server agent learns its public port from the hub', () async {
       final echo = await EchoServer.bind();
-      final controlPort = await freePort();
-      final publicPort = await freePort();
-
-      final hub = TunnelHub(controlPort, servicePorts: {'svc': publicPort});
+      final hub = TunnelHub(0, servicePorts: {'svc': 0});
       await hub.start();
+      final controlPort = hub.boundControlPort!;
+      final publicPort = hub.boundPorts['svc']!;
 
       final agent = TunnelServerAgent(
         'localhost',
@@ -510,11 +521,10 @@ void main() {
 
     test('server agent reports null public port in local port mode', () async {
       final echo = await EchoServer.bind();
-      final controlPort = await freePort();
-
       // No public port for "svc" (local port mode only).
-      final hub = TunnelHub(controlPort);
+      final hub = TunnelHub(0);
       await hub.start();
+      final controlPort = hub.boundControlPort!;
 
       final agent = TunnelServerAgent(
         'localhost',
@@ -546,10 +556,9 @@ void main() {
       '--map-dynamic: a publisher can request a dynamic public port',
       () async {
         final echo = await EchoServer.bind();
-        final controlPort = await freePort();
-
-        final hub = TunnelHub(controlPort, dynamicPublicPorts: true);
+        final hub = TunnelHub(0, dynamicPublicPorts: true);
         await hub.start();
+        final controlPort = hub.boundControlPort!;
 
         // Nothing is bound until an agent asks for a port; --map-dynamic only
         // permits the request, it does not auto-allocate.
@@ -588,11 +597,10 @@ void main() {
       '--map-dynamic off: a service with no request stays local-only',
       () async {
         final echo = await EchoServer.bind();
-        final controlPort = await freePort();
-
         // No --map-dynamic and the agent requests nothing: no public port.
-        final hub = TunnelHub(controlPort, dynamicPublicPorts: true);
+        final hub = TunnelHub(0, dynamicPublicPorts: true);
         await hub.start();
+        final controlPort = hub.boundControlPort!;
 
         final agent = TunnelServerAgent(
           'localhost',
@@ -615,11 +623,9 @@ void main() {
 
     test('local port mode: client agent local port round-trips', () async {
       final echo = await EchoServer.bind();
-      final controlPort = await freePort();
-      final localPort = await freePort();
-
-      final hub = TunnelHub(controlPort);
+      final hub = TunnelHub(0);
       await hub.start();
+      final controlPort = hub.boundControlPort!;
 
       final server = TunnelServerAgent(
         'localhost',
@@ -630,13 +636,9 @@ void main() {
       );
       await server.start();
 
-      final client = TunnelClientAgent(
-        'localhost',
-        controlPort,
-        'svc',
-        localPort,
-      );
+      final client = TunnelClientAgent('localhost', controlPort, 'svc', 0);
       await client.start();
+      final localPort = client.boundListenPort!;
       await _wait(150);
 
       final app = await TestClient.connect(localPort);
@@ -653,11 +655,10 @@ void main() {
 
     test('server-speaks-first: greeting reaches client', () async {
       final echo = await EchoServer.bind(greeting: 'WELCOME\n');
-      final controlPort = await freePort();
-      final publicPort = await freePort();
-
-      final hub = TunnelHub(controlPort, servicePorts: {'svc': publicPort});
+      final hub = TunnelHub(0, servicePorts: {'svc': 0});
       await hub.start();
+      final controlPort = hub.boundControlPort!;
+      final publicPort = hub.boundPorts['svc']!;
       final agent = TunnelServerAgent(
         'localhost',
         controlPort,
@@ -683,11 +684,10 @@ void main() {
 
     test('pool refill: sequential connections all succeed', () async {
       final echo = await EchoServer.bind();
-      final controlPort = await freePort();
-      final publicPort = await freePort();
-
-      final hub = TunnelHub(controlPort, servicePorts: {'svc': publicPort});
+      final hub = TunnelHub(0, servicePorts: {'svc': 0});
       await hub.start();
+      final controlPort = hub.boundControlPort!;
+      final publicPort = hub.boundPorts['svc']!;
       final agent = TunnelServerAgent(
         'localhost',
         controlPort,
@@ -718,11 +718,10 @@ void main() {
 
     test('pool refill: concurrent connections all succeed', () async {
       final echo = await EchoServer.bind();
-      final controlPort = await freePort();
-      final publicPort = await freePort();
-
-      final hub = TunnelHub(controlPort, servicePorts: {'svc': publicPort});
+      final hub = TunnelHub(0, servicePorts: {'svc': 0});
       await hub.start();
+      final controlPort = hub.boundControlPort!;
+      final publicPort = hub.boundPorts['svc']!;
       final agent = TunnelServerAgent(
         'localhost',
         controlPort,
@@ -757,15 +756,13 @@ void main() {
     });
 
     test('client times out when no server is registered', () async {
-      final controlPort = await freePort();
-      final publicPort = await freePort();
-
       final hub = TunnelHub(
-        controlPort,
-        servicePorts: {'svc': publicPort},
+        0,
+        servicePorts: {'svc': 0},
         clientWaitTimeout: const Duration(milliseconds: 300),
       );
       await hub.start();
+      final publicPort = hub.boundPorts['svc']!;
 
       final client = await Socket.connect('localhost', publicPort);
       var closed = false;
@@ -778,15 +775,14 @@ void main() {
 
     test('dead parked conns are evicted (no hang on stale pool)', () async {
       final echo = await EchoServer.bind();
-      final controlPort = await freePort();
-      final publicPort = await freePort();
-
       final hub = TunnelHub(
-        controlPort,
-        servicePorts: {'svc': publicPort},
+        0,
+        servicePorts: {'svc': 0},
         clientWaitTimeout: const Duration(milliseconds: 400),
       );
       await hub.start();
+      final controlPort = hub.boundControlPort!;
+      final publicPort = hub.boundPorts['svc']!;
 
       final agent = TunnelServerAgent(
         'localhost',

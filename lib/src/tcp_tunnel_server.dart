@@ -51,25 +51,60 @@ class TunnelLocalServer {
       rethrow;
     }
 
-    server.listen((Socket socket) {
-      Tunnel.targetPort(
-        socket,
-        targetPort,
-        targetHost: targetHost,
-        verbose: verbose,
-      ).then((tunnel) {
-        if (tunnel != null) {
-          _log.info("-- Connected: $tunnel");
-        }
-      });
-    });
+    server.listen(_onAccept);
 
     _log.info('** Started: $this');
   }
 
-  /// Closes the tunnel server.
-  void close() {
+  /// Tunnels currently running (removed when they close).
+  final Set<Tunnel> _tunnels = {};
+
+  /// Set by [close]: stop accepting.
+  bool _closed = false;
+
+  /// Set by [close] unless `closeActiveTunnels` was `false`: a tunnel whose
+  /// target connect completes afterwards is closed at once.
+  bool _tunnelsClosed = false;
+
+  Future<void> _onAccept(Socket socket) async {
+    // Accepted while [close] was running (the listener closes asynchronously).
+    if (_closed) return socket.destroy();
+
+    final tunnel = await Tunnel.targetPort(
+      socket,
+      targetPort,
+      targetHost: targetHost,
+      verbose: verbose,
+    );
+    if (tunnel == null) return;
+    // [close] ran while the target connect was pending.
+    if (_tunnelsClosed) return tunnel.close();
+
+    _tunnels.add(tunnel);
+    tunnel.onClose = _tunnels.remove;
+    _log.info("-- Connected: $tunnel");
+  }
+
+  /// Closes the tunnel server: stops listening and, by default, closes every
+  /// tunnel it accepted (one still connecting to the target is closed as soon
+  /// as that connect completes).
+  ///
+  /// With [closeActiveTunnels] `false` only the listener is closed and running
+  /// tunnels are left to finish on their own (graceful shutdown); a later
+  /// [close] call closes whatever is still running.
+  void close({bool closeActiveTunnels = true}) {
+    _closed = true;
     _server?.close();
+
+    if (!closeActiveTunnels) return;
+    _tunnelsClosed = true;
+
+    // Closing a tunnel removes it from [_tunnels] (via `onClose`): iterate a
+    // copy.
+    for (var tunnel in _tunnels.toList()) {
+      tunnel.close();
+    }
+    _tunnels.clear();
   }
 
   @override

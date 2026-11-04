@@ -107,11 +107,35 @@ class SocketAsync {
 
   StreamSubscription<Uint8List>? _subscription;
 
+  /// Maximum inbound bytes buffered while no [listen] consumer is attached.
+  ///
+  /// Until this many bytes are buffered the socket keeps being read, so a peer
+  /// that closes (or errors) while waiting is still noticed ([isInputDone]).
+  /// Once reached, reading pauses until [listen] attaches a consumer, which
+  /// bounds memory; a peer closing after that is only seen once reading resumes.
+  static const int maxBufferedInput = 64 * 1024;
+
   /// Inbound data received before a [listen] consumer is attached.
   final List<Uint8List> _inBuffer = <Uint8List>[];
 
-  /// `true` while [_subscription] is paused because there is no consumer yet.
+  /// Total bytes held in [_inBuffer].
+  int _inBufferBytes = 0;
+
+  /// `true` while [_subscription] is paused because there is no consumer yet
+  /// and [maxBufferedInput] was reached.
   bool _pausedNoConsumer = false;
+
+  bool _inputDone = false;
+
+  /// `true` once the peer has finished sending: its end of the stream was seen
+  /// (EOF) or the socket errored. [close] follows shortly (see [closeAsync]);
+  /// any already received bytes are still delivered to a [listen] consumer.
+  bool get isInputDone => _inputDone;
+
+  void _onInputDone() {
+    _inputDone = true;
+    closeAsync();
+  }
 
   void _setSocket(Socket skt, OnConnectSocket? onConnect) {
     _socket = skt;
@@ -130,8 +154,8 @@ class SocketAsync {
     _zoneGuarded.runGuarded(() {
       _subscription = skt.listen(
         _onData,
-        onError: (e) => closeAsync(),
-        onDone: closeAsync,
+        onError: (e) => _onInputDone(),
+        onDone: _onInputDone,
         cancelOnError: true,
       );
     });
@@ -153,6 +177,11 @@ class SocketAsync {
       _port = skt.port;
     } catch (_) {}
 
+    // The stream may already have ended (or errored) while still framed, e.g.
+    // a peer that sent its HELLO and closed: its subscription will not deliver
+    // another event, so the end must be carried over here.
+    final alreadyDone = conn.isClosed;
+
     conn.markAdopted();
     final subscription = _subscription = conn.subscription;
 
@@ -166,14 +195,16 @@ class SocketAsync {
     // guarded zone by [FramedConnection], so callbacks stay guarded.
     subscription
       ..onData(_onData)
-      ..onError((e) => closeAsync())
-      ..onDone(closeAsync);
+      ..onError((e) => _onInputDone())
+      ..onDone(_onInputDone);
 
     // Replay bytes already read past the handshake before piping begins.
     final leftover = conn.takeLeftover();
     if (leftover.isNotEmpty) {
       _onData(leftover);
     }
+
+    if (alreadyDone) _onInputDone();
 
     _flushData();
   }
@@ -189,10 +220,12 @@ class SocketAsync {
     if (listener != null) {
       _deliver(listener, data);
     } else {
-      // No consumer yet: buffer and stop reading to bound memory. Reading
-      // resumes when [listen] attaches a consumer.
+      // No consumer yet: buffer, but keep reading (so a peer close is still
+      // seen) until [maxBufferedInput] is reached; then stop reading to bound
+      // memory. Reading resumes when [listen] attaches a consumer.
       _inBuffer.add(Uint8List.fromList(data));
-      if (!_pausedNoConsumer) {
+      _inBufferBytes += data.length;
+      if (!_pausedNoConsumer && _inBufferBytes >= maxBufferedInput) {
         _pausedNoConsumer = true;
         _subscription?.pause();
       }
@@ -222,11 +255,24 @@ class SocketAsync {
     _listener = listener;
 
     if (_inBuffer.isNotEmpty) {
-      var buffered = List<Uint8List>.of(_inBuffer);
-      _inBuffer.clear();
-      for (var data in buffered) {
-        _deliver(listener, data);
+      // Deliver everything buffered as ONE chunk: a listener that writes and
+      // returns the destination's flush (as [Tunnel] does) must not be called
+      // again before that flush completes (an `IOSink` rejects an `add` while
+      // flushing), which a loop over the chunks would do. The buffer is
+      // bounded by [maxBufferedInput] (plus one read).
+      final Uint8List data;
+      if (_inBuffer.length == 1) {
+        data = _inBuffer.first;
+      } else {
+        final builder = BytesBuilder(copy: false);
+        for (var chunk in _inBuffer) {
+          builder.add(chunk);
+        }
+        data = builder.takeBytes();
       }
+      _inBuffer.clear();
+      _inBufferBytes = 0;
+      _deliver(listener, data);
     }
 
     if (_pausedNoConsumer) {

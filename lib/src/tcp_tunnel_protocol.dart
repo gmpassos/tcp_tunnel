@@ -358,12 +358,23 @@ class FramedConnection {
     _adopted = true;
   }
 
+  /// Destroys the connection (a no-op once [isAdopted]).
+  ///
+  /// A pending [readFrame] fails with a [StateError] instead of hanging (the
+  /// cancelled subscription would never deliver another event), and so does
+  /// any later [readFrame]. [onClosed] is not called: the caller closed it.
   void close() {
-    if (!_adopted) {
-      subscription.cancel();
-      try {
-        socket.destroy();
-      } catch (_) {}
+    if (_adopted) return;
+    subscription.cancel();
+    try {
+      socket.destroy();
+    } catch (_) {}
+
+    _done = true;
+    final pending = _pendingRead;
+    if (pending != null && !pending.isCompleted) {
+      _pendingRead = null;
+      pending.completeError(StateError('Connection closed'));
     }
   }
 }

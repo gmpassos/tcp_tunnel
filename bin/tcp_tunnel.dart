@@ -94,7 +94,9 @@ Never _exitStartFailure(String what, Object error) {
   exit(1);
 }
 
-/// Actions to run on shutdown (close active servers/tunnels).
+/// Actions to run on shutdown (close active servers/tunnels). The listeners'
+/// `close()` is registered as is: by default it also closes their parked/queued
+/// connections and active tunnels, so peers see the shutdown before [exit].
 final _shutdownActions = <void Function()>[];
 
 void _setupGracefulShutdown() {

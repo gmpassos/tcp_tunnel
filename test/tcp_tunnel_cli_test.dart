@@ -301,6 +301,38 @@ void main() {
       expect(await cli.waitExit(), 0);
     });
 
+    test('bridge: SIGINT with an active tunnel closes it and exits promptly '
+        '(0)', () async {
+      final cli = await CliProcess.start(['bridge', '0', '0']);
+      addTearDown(cli.kill);
+
+      final m = await cli.waitForLine(
+        RegExp(r'^-- Listening on ports: (\d+), (\d+)'),
+      );
+      final a = await Socket.connect('localhost', int.parse(m.group(1)!));
+      final b = await Socket.connect('localhost', int.parse(m.group(2)!));
+      addTearDown(() {
+        a.destroy();
+        b.destroy();
+      });
+      final fromA = StringBuffer();
+      final bDone = utf8.decoder
+          .bind(b)
+          .forEach(fromA.write)
+          .catchError((_) {});
+      final aDone = a.drain<void>().catchError((_) {});
+
+      a.write('live');
+      await a.flush();
+      await _until(() => fromA.toString() == 'live');
+
+      cli.process.kill(ProcessSignal.sigint);
+      expect(await cli.waitExit(timeout: const Duration(seconds: 10)), 0);
+      expect(cli.output, contains('shutting down'));
+      await aDone.timeout(_exitTimeout);
+      await bDone.timeout(_exitTimeout);
+    });
+
     test(
       'hub: serves a library-published service on its public port',
       () async {
