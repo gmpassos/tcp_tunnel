@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
@@ -202,6 +203,40 @@ void main() {
   });
 
   group('transport encryption (TLS)', () {
+    test(
+      'close() drops a control connection still in its TLS handshake',
+      () async {
+        final hub = TunnelHub(0, securityContext: _hubContext());
+        await hub.start();
+
+        // Plain TCP with no ClientHello yet: the hub's handshake waits.
+        final raw = await Socket.connect('localhost', hub.boundControlPort!);
+        await _wait(300);
+        hub.close();
+
+        // The handshake (which cannot be aborted) ends after close(): the hub
+        // then drops the connection instead of reading a HELLO from it.
+        final done = Completer<void>();
+        void finish([_]) {
+          if (!done.isCompleted) done.complete();
+        }
+
+        try {
+          final tls = await SecureSocket.secure(
+            raw,
+            context: _agentContext(),
+            onBadCertificate: _acceptCert,
+          );
+          tls.done.ignore();
+          tls.add(encodeFrame(Frame.hello(role: 'server', service: 'svc')));
+          tls.listen((_) {}, onError: finish, onDone: finish);
+        } on Object catch (_) {
+          finish(); // dropped during the handshake
+        }
+        await done.future.timeout(const Duration(seconds: 10));
+      },
+    );
+
     test('plaintext publisher against a TLS hub never registers', () async {
       final echo = await EchoServer.bind();
       final hub = TunnelHub(

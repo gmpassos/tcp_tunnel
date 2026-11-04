@@ -482,6 +482,55 @@ void main() {
   });
 
   group('TunnelBridge eviction', () {
+    for (final deadSide in [1, 2]) {
+      test('a queued socket (side $deadSide) that sent data and then EOF is '
+          'dropped at pairing, without waiting for its close', () async {
+        final bridge = TunnelBridge(0, 0);
+        await bridge.start();
+        final deadPort = deadSide == 1
+            ? bridge.boundPort1!
+            : bridge.boundPort2!;
+        final livePort = deadSide == 1
+            ? bridge.boundPort2!
+            : bridge.boundPort1!;
+        final otherPort = deadSide == 1
+            ? bridge.boundPort1!
+            : bridge.boundPort2!;
+
+        // Sends, then half-closes: its EOF is seen while it is queued, well
+        // before `SocketAsync` closes it (1s after EOF).
+        final dead = await Socket.connect('localhost', deadPort);
+        dead.listen((_) {}, onError: (_) {});
+        dead.add([66, 66]);
+        await dead.close();
+        await _wait(200);
+
+        // A peer for the dead socket's slot arrives: it must not get the dead
+        // socket's bytes, and must pair with the next live socket instead.
+        final live = await Socket.connect('localhost', livePort);
+        final liveReceived = <int>[];
+        live.listen(liveReceived.addAll, onError: (_) {});
+        final other = await Socket.connect('localhost', otherPort);
+        final otherReceived = <int>[];
+        other.listen(otherReceived.addAll, onError: (_) {});
+
+        other.add([42]);
+        await other.flush();
+        live.add([24]);
+        await live.flush();
+
+        await eventually(() {
+          expect(liveReceived, equals([42]));
+          expect(otherReceived, equals([24]));
+        });
+
+        live.destroy();
+        other.destroy();
+        dead.destroy();
+        bridge.close();
+      });
+    }
+
     test('a queued socket that closes before pairing is not paired', () async {
       final bridge = TunnelBridge(0, 0);
       await bridge.start();

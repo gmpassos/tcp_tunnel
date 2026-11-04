@@ -56,35 +56,29 @@ class TunnelLocalServer {
     _log.info('** Started: $this');
   }
 
-  /// Accepted sockets whose target connection is still being established.
-  final Set<Socket> _connecting = {};
-
   /// Tunnels currently running (removed when they close).
   final Set<Tunnel> _tunnels = {};
 
+  /// Set by [close]: stop accepting.
   bool _closed = false;
 
-  Future<void> _onAccept(Socket socket) async {
-    if (_closed) {
-      socket.destroy();
-      return;
-    }
+  /// Set by [close] unless `closeActiveTunnels` was `false`: a tunnel whose
+  /// target connect completes afterwards is closed at once.
+  bool _tunnelsClosed = false;
 
-    _connecting.add(socket);
+  Future<void> _onAccept(Socket socket) async {
+    // Accepted while [close] was running (the listener closes asynchronously).
+    if (_closed) return socket.destroy();
+
     final tunnel = await Tunnel.targetPort(
       socket,
       targetPort,
       targetHost: targetHost,
       verbose: verbose,
     );
-    // Not in [_connecting] anymore: [close] dropped it while connecting.
-    final owned = _connecting.remove(socket);
     if (tunnel == null) return;
-
-    if (!owned || tunnel.isClosed) {
-      tunnel.close();
-      return;
-    }
+    // [close] ran while the target connect was pending.
+    if (_tunnelsClosed) return tunnel.close();
 
     _tunnels.add(tunnel);
     tunnel.onClose = _tunnels.remove;
@@ -92,7 +86,8 @@ class TunnelLocalServer {
   }
 
   /// Closes the tunnel server: stops listening and, by default, closes every
-  /// tunnel it accepted (including those still connecting to the target).
+  /// tunnel it accepted (one still connecting to the target is closed as soon
+  /// as that connect completes).
   ///
   /// With [closeActiveTunnels] `false` only the listener is closed and running
   /// tunnels are left to finish on their own (graceful shutdown); a later
@@ -102,13 +97,7 @@ class TunnelLocalServer {
     _server?.close();
 
     if (!closeActiveTunnels) return;
-
-    for (var socket in _connecting) {
-      try {
-        socket.destroy();
-      } catch (_) {}
-    }
-    _connecting.clear();
+    _tunnelsClosed = true;
 
     // Closing a tunnel removes it from [_tunnels] (via `onClose`): iterate a
     // copy.

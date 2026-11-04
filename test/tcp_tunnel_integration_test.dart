@@ -493,6 +493,57 @@ void main() {
       expect(s.isClosed, isTrue);
       expect(fake.closed, isTrue);
     });
+
+    test('keeps reading while unconsumed (so EOF is seen), then delivers the '
+        'buffered chunks once, in order', () async {
+      final fake = FakeSocket();
+      final s = SocketAsync.from(fake);
+      addTearDown(s.close);
+
+      fake.feed([1, 2]);
+      fake.feed([3]);
+      await fake.input.close();
+      await pumpEventQueue();
+      expect(s.isInputDone, isTrue);
+      expect(s.isClosed, isFalse, reason: 'closes after a delay');
+
+      final chunks = <List<int>>[];
+      s.listen((d) => chunks.add(d));
+      expect(chunks, [
+        [1, 2, 3],
+      ]);
+    });
+
+    test('adopting a connection that already ended carries the EOF over, '
+        'after replaying its leftover bytes', () async {
+      final fake = FakeSocket();
+      final conn = FramedConnection(fake);
+      fake.feed([
+        ...encodeFrame(Frame.hello(role: 'client', service: 'svc')),
+        ...utf8.encode('tail'),
+      ]);
+      await fake.input.close();
+      expect((await conn.readFrame()).service, 'svc');
+      expect(conn.isClosed, isTrue);
+
+      final s = SocketAsync.adopt(conn);
+      addTearDown(s.close);
+      expect(s.isInputDone, isTrue);
+
+      final rx = <int>[];
+      s.listen((d) => rx.addAll(d));
+      expect(utf8.decode(rx), 'tail');
+    });
+
+    test('FramedConnection.close() fails a pending read', () async {
+      final fake = FakeSocket();
+      final conn = FramedConnection(fake);
+      final read = conn.readFrame();
+      conn.close();
+      await expectLater(read, throwsStateError);
+      expect(conn.isClosed, isTrue);
+      await expectLater(conn.readFrame(), throwsStateError);
+    });
   });
 
   group('Tunnel', () {
@@ -752,6 +803,31 @@ void main() {
       await parkedClosed;
       await waitingClosed;
       await silent.done;
+    });
+
+    test('TunnelHub closes a pairing still waiting for its READY', () async {
+      final hub = TunnelHub(0, servicePorts: {'svc': 0});
+      await hub.start();
+      addTearDown(hub.close);
+
+      final server = await RawConn.connect(hub.boundControlPort!);
+      addTearDown(server.destroy);
+      server.send(Frame.hello(role: 'server', service: 'svc'));
+      expect((await server.read()).type, FrameType.welcome);
+
+      final client = await Peer.connect(hub.boundPorts['svc']!);
+      addTearDown(client.destroy);
+      // The agent never answers the ACTIVATE with READY.
+      expect((await server.read()).type, FrameType.activate);
+
+      final serverClosed = expectLater(
+        server.read(),
+        throwsA(anyOf(isA<StateError>(), isA<SocketException>())),
+      );
+      hub.close();
+      await client.done;
+      await serverClosed;
+      expect(client.length, 0);
     });
 
     test('TunnelHub close(closeActiveTunnels: false) keeps them until a later '
@@ -1179,7 +1255,8 @@ void main() {
         'and its bytes never reach the service (settle ${settleMs}ms)',
         () async {
           final echo = await clientGoneBeforeServer(
-            verbose: false,
+            // Covers the verbose eviction log too.
+            verbose: settleMs < 1000,
             data: 'sent-then-gone',
             settleMs: settleMs,
           );

@@ -618,9 +618,6 @@ class Tunnel {
 
   bool _closed = false;
 
-  /// `true` once [close] was called (directly or after a socket closed).
-  bool get isClosed => _closed;
-
   /// Closes the tunnels and its [Sockets].
   void close() {
     if (_closed) return;

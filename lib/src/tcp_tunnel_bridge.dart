@@ -66,10 +66,8 @@ class TunnelBridge {
   bool _closed = false;
 
   void _enqueue(List<SocketAsync> queue, Socket socket) {
-    if (_closed) {
-      socket.destroy();
-      return;
-    }
+    // Accepted while [close] was running (the listener closes asynchronously).
+    if (_closed) return socket.destroy();
 
     final socketAsync = SocketAsync.from(socket);
     queue.add(socketAsync);

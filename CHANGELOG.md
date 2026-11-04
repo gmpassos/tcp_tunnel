@@ -5,13 +5,16 @@
   used to only stop listening, leaving already paired tunnels (and, for the
   hub, parked server-agent connections and waiting clients) running. They now
   close their listeners, every queued/parked/waiting connection and every
-  active tunnel (including a `TunnelLocalServer` connection still connecting
-  to its target and a hub pairing still being activated).
+  active tunnel (a `TunnelLocalServer` connection still connecting to its
+  target is closed as soon as that connect completes; a hub pairing still
+  being activated is closed at once).
   - New opt-in for graceful shutdown: `close(closeActiveTunnels: false)` stops
     listening and drops queued/parked/waiting connections but leaves active
     tunnels to finish on their own; a later `close()` closes whatever is still
     running. Same signature on all three classes.
-  - Connections accepted after `close()` (already in flight) are dropped.
+  - Connections accepted after `close()` (already in flight) are dropped. A
+    hub control connection still in its TLS handshake (which cannot be
+    aborted) is dropped as soon as the handshake ends.
   - The CLI's SIGINT/SIGTERM shutdown uses the new `close()`, so peers see
     their tunnels closed, and the process exits right away.
 - `TunnelHub`: fixed a waiting client that sent data and then disconnected
@@ -36,7 +39,6 @@
   `StateError`) instead of leaving it pending forever. This also stops the
   keepalive timer of a `TunnelServerAgent` parked connection closed by
   `TunnelServerAgent.close()`.
-- New `Tunnel.isClosed`.
 - Tests:
   - every test listener binds port `0` and reads the real port back
     (`boundPort`, `boundPort1`/`boundPort2`, `boundControlPort`,

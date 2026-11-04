@@ -208,9 +208,6 @@ class TunnelHub {
   bool _started = false;
   bool _closed = false;
 
-  /// Control-port sockets still in their TLS handshake.
-  final Set<Socket> _securing = {};
-
   /// Control-port connections whose HELLO has not been read yet.
   final Set<FramedConnection> _awaitingHello = {};
 
@@ -258,30 +255,24 @@ class TunnelHub {
   /// Handles a connection on the control port: optionally completes a TLS
   /// handshake, then reads its HELLO and routes it.
   Future<void> _onControlSocket(Socket socket) async {
-    if (_closed) {
-      socket.destroy();
-      return;
-    }
+    // Accepted while [close] was running (the listener closes asynchronously).
+    if (_closed) return socket.destroy();
 
     final ctx = securityContext;
     if (ctx != null) {
-      final raw = socket;
-      _securing.add(raw);
+      // The handshake owns (detaches) [socket] and cannot be aborted, so a
+      // connection still handshaking when [close] runs is dropped as soon as
+      // its handshake ends.
       try {
-        socket = await SecureSocket.secureServer(raw, ctx);
+        socket = await SecureSocket.secureServer(socket, ctx);
       } catch (e, s) {
-        _securing.remove(raw);
-        if (!_closed) _log.warning('** TLS handshake failed: $e', e, s);
+        _log.warning('** TLS handshake failed: $e', e, s);
         try {
-          raw.destroy();
+          socket.destroy();
         } catch (_) {}
         return;
       }
-      // Not in [_securing] anymore: [close] dropped it during the handshake.
-      if (!_securing.remove(raw) || _closed) {
-        socket.destroy();
-        return;
-      }
+      if (_closed) return socket.destroy();
     }
 
     final conn = FramedConnection(socket, zone: Tunnel.zoneGuarded);
@@ -346,10 +337,8 @@ class TunnelHub {
 
   /// Handles a public port mode plain TCP client on a public service port.
   void _onPublicSocket(String service, Socket socket) {
-    if (_closed) {
-      socket.destroy();
-      return;
-    }
+    // Accepted while [close] was running (the listener closes asynchronously).
+    if (_closed) return socket.destroy();
     _registerClient(service, SocketAsync.from(socket), _peerOf(socket));
   }
 
@@ -486,11 +475,8 @@ class TunnelHub {
       return false;
     }
 
-    if (_closed) {
-      // [close] ran while binding: do not start serving a closed hub.
-      server.close();
-      return false;
-    }
+    // [close] ran while binding: do not start serving a closed hub.
+    if (_closed) return server.close().then((_) => false);
 
     server.listen((socket) => _onPublicSocket(service, socket));
     _publicServers.add(server);
@@ -718,10 +704,8 @@ class TunnelHub {
       return;
     }
 
-    if (!_activations.remove(activation)) {
-      activation.close(); // dropped by [close] while READY was in flight
-      return;
-    }
+    // Dropped by [close] while READY was in flight.
+    if (!_activations.remove(activation)) return activation.close();
 
     final serverSocket = SocketAsync.adopt(conn);
     final tunnel = Tunnel.pair(
@@ -748,9 +732,10 @@ class TunnelHub {
   }
 
   /// Closes the hub: its control and public listening sockets, every agent
-  /// connection still handshaking, every parked server-agent connection, every
-  /// waiting client and, by default, every active tunnel (including pairings
-  /// still being activated).
+  /// connection whose HELLO is pending, every parked server-agent connection,
+  /// every waiting client and, by default, every active tunnel (including
+  /// pairings still being activated). A control connection still in its TLS
+  /// handshake (which cannot be aborted) is dropped when the handshake ends.
   ///
   /// With [closeActiveTunnels] `false` active tunnels (and pairings being
   /// activated) are left to finish on their own (graceful shutdown); a later
@@ -763,13 +748,6 @@ class TunnelHub {
       server.close();
     }
     _publicServers.clear();
-
-    for (var socket in _securing) {
-      try {
-        socket.destroy();
-      } catch (_) {}
-    }
-    _securing.clear();
 
     // Each set/list is cleared before its members are closed, so callbacks
     // fired by a close (e.g. a failing pending read) see them already dropped.
