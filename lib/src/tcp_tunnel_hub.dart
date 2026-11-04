@@ -537,10 +537,16 @@ class TunnelHub {
     // Reads until READY (post-activation barrier) or close; must keep reading
     // even after the conn is taken so an in-flight PING can't end the loop
     // before READY arrives.
+    //
+    // A read that times out is still pending on [conn] (only one may be), so
+    // it is kept and awaited again instead of starting a new one.
+    Future<Frame>? pendingRead;
     while (true) {
       final Frame frame;
       try {
-        frame = await conn.readFrame().timeout(parkedIdleTimeout);
+        final read = pendingRead ??= conn.readFrame();
+        frame = await read.timeout(parkedIdleTimeout);
+        pendingRead = null;
       } on TimeoutException {
         if (parked.taken) continue; // activation in progress; keep waiting
         _log.info('-- Reaping idle parked conn');

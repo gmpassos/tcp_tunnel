@@ -15,6 +15,25 @@ Future<int> freePort() async {
 
 Future<void> _wait([int ms = 30]) => Future.delayed(Duration(milliseconds: ms));
 
+/// Retries [check] (a block of `expect`s) until it passes, rethrowing its last
+/// failure after [timeout]. Used for data that is still in flight, instead of
+/// asserting right after a fixed sleep (which flakes on a loaded machine).
+Future<void> eventually(
+  void Function() check, {
+  Duration timeout = const Duration(seconds: 10),
+}) async {
+  final deadline = DateTime.now().add(timeout);
+  while (true) {
+    try {
+      check();
+      return;
+    } on TestFailure {
+      if (DateTime.now().isAfter(deadline)) rethrow;
+    }
+    await _wait(20);
+  }
+}
+
 /// Collects every chunk received per accepted socket.
 class RecordingServer {
   final ServerSocket server;
@@ -69,8 +88,10 @@ void main() {
       await socket.close();
       await _wait();
 
-      expect(server.data.length, equals(1));
-      expect(server.firstFlat, equals([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]));
+      await eventually(() {
+        expect(server.data.length, equals(1));
+        expect(server.firstFlat, equals([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]));
+      });
 
       tunnel.close();
       await server.close();
@@ -95,7 +116,7 @@ void main() {
       await socket.flush();
       await _wait();
 
-      expect(received, equals([10, 20, 30, 40, 50]));
+      await eventually(() => expect(received, equals([10, 20, 30, 40, 50])));
 
       await socket.close();
       tunnel.close();
@@ -123,12 +144,14 @@ void main() {
       await s2.flush();
       await _wait();
 
-      expect(server.data.length, equals(2));
-      final allBytes = server.data.values
-          .expand((e) => e)
-          .expand((e) => e)
-          .toList();
-      expect(allBytes..sort(), equals([1, 1, 1, 2, 2, 2]));
+      await eventually(() {
+        expect(server.data.length, equals(2));
+        final allBytes = server.data.values
+            .expand((e) => e)
+            .expand((e) => e)
+            .toList();
+        expect(allBytes..sort(), equals([1, 1, 1, 2, 2, 2]));
+      });
 
       await s1.close();
       await s2.close();
@@ -160,8 +183,10 @@ void main() {
       await b.flush();
       await _wait();
 
-      expect(bReceived, equals([1, 2, 3]));
-      expect(aReceived, equals([9, 8, 7]));
+      await eventually(() {
+        expect(bReceived, equals([1, 2, 3]));
+        expect(aReceived, equals([9, 8, 7]));
+      });
 
       await a.close();
       await b.close();
@@ -199,8 +224,10 @@ void main() {
       await a2.flush();
       await _wait();
 
-      expect(b1Recv, equals([11]));
-      expect(b2Recv, equals([22]));
+      await eventually(() {
+        expect(b1Recv, equals([11]));
+        expect(b2Recv, equals([22]));
+      });
 
       await a1.close();
       await a2.close();
@@ -238,7 +265,7 @@ void main() {
       await clientA.flush();
       await _wait();
 
-      expect(bRecv, equals([5, 6, 7]));
+      await eventually(() => expect(bRecv, equals([5, 6, 7])));
 
       tunnel.close();
       await clientA.close();
@@ -316,7 +343,9 @@ void main() {
       await _wait();
 
       // Echo server bounces the bytes back through the whole chain.
-      expect(received, equals([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]));
+      await eventually(
+        () => expect(received, equals([1, 2, 3, 4, 5, 6, 7, 8, 9, 10])),
+      );
 
       await socket.close();
       clientTunnel.close();
@@ -396,10 +425,12 @@ void main() {
       await remoteSide!.flush();
       await _wait(100);
 
-      expect(
-        targetConnections,
-        equals(1),
-        reason: 'target connects after the first remote data',
+      await eventually(
+        () => expect(
+          targetConnections,
+          equals(1),
+          reason: 'target connects after the first remote data',
+        ),
       );
 
       tunnel.close();
@@ -474,10 +505,12 @@ void main() {
       await a.flush();
       await _wait();
 
-      expect(
-        bReceived,
-        equals([42]),
-        reason: 'live socket must pair with the live peer, not a dead one',
+      await eventually(
+        () => expect(
+          bReceived,
+          equals([42]),
+          reason: 'live socket must pair with the live peer, not a dead one',
+        ),
       );
 
       await a.close();
@@ -518,14 +551,18 @@ void main() {
       await tunnel.onReady.timeout(Duration(seconds: 5));
       await _wait();
 
-      expect(target.firstFlat, equals('HELLO'.codeUnits));
+      await eventually(
+        () => expect(target.firstFlat, equals('HELLO'.codeUnits)),
+      );
 
       // A subsequent chunk is forwarded too.
       remoteSide!.add('WORLD'.codeUnits);
       await remoteSide!.flush();
       await _wait();
 
-      expect(target.firstFlat, equals('HELLOWORLD'.codeUnits));
+      await eventually(
+        () => expect(target.firstFlat, equals('HELLOWORLD'.codeUnits)),
+      );
 
       tunnel.close();
       await remote.close();
@@ -556,7 +593,7 @@ void main() {
       await tunnel.onReady.timeout(Duration(seconds: 5));
       await _wait();
 
-      expect(remoteReceived, equals([1, 2, 3]));
+      await eventually(() => expect(remoteReceived, equals([1, 2, 3])));
 
       tunnel.close();
       await remote.close();
@@ -584,10 +621,12 @@ void main() {
       b.listen(bReceived.addAll);
       await _wait();
 
-      expect(
-        bReceived,
-        equals([7, 7, 7]),
-        reason: 'data buffered while queued must be delivered after pairing',
+      await eventually(
+        () => expect(
+          bReceived,
+          equals([7, 7, 7]),
+          reason: 'data buffered while queued must be delivered after pairing',
+        ),
       );
 
       await a.close();
@@ -627,9 +666,11 @@ void main() {
       }
       await _wait(100);
 
-      for (var i = 0; i < n; i++) {
-        expect(received[i], equals([i]), reason: 'pair $i must be isolated');
-      }
+      await eventually(() {
+        for (var i = 0; i < n; i++) {
+          expect(received[i], equals([i]), reason: 'pair $i must be isolated');
+        }
+      });
 
       for (final s in [...side1, ...side2]) {
         await s.close();
@@ -745,7 +786,7 @@ void main() {
       await socket.flush();
       await _wait();
 
-      expect(server.firstFlat, equals([1, 2, 3]));
+      await eventually(() => expect(server.firstFlat, equals([1, 2, 3])));
 
       await socket.close();
       tunnel.close();
@@ -771,7 +812,7 @@ void main() {
       await socket.flush();
       await _wait();
 
-      expect(server.firstFlat, equals([9, 8, 7]));
+      await eventually(() => expect(server.firstFlat, equals([9, 8, 7])));
 
       await socket.close();
       tunnel.close();
@@ -794,10 +835,12 @@ void main() {
       await socket.close();
 
       await _wait(200);
-      expect(
-        server.firstFlat,
-        equals([1, 2, 3, 4, 5]),
-        reason: 'data written before close must be delivered',
+      await eventually(
+        () => expect(
+          server.firstFlat,
+          equals([1, 2, 3, 4, 5]),
+          reason: 'data written before close must be delivered',
+        ),
       );
 
       tunnel.close();
@@ -820,7 +863,7 @@ void main() {
       await socket.flush();
       await _wait();
 
-      expect(server.firstFlat, equals([1, 2, 3]));
+      await eventually(() => expect(server.firstFlat, equals([1, 2, 3])));
 
       await socket.close();
       tunnel.close();
@@ -854,7 +897,7 @@ void main() {
       await clientB.flush();
       await _wait();
 
-      expect(aRecv, equals([3, 2, 1]));
+      await eventually(() => expect(aRecv, equals([3, 2, 1])));
 
       tunnel.close();
       await clientA.close();

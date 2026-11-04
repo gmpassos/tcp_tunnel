@@ -170,7 +170,8 @@ class DecodedFrame {
 ///
 /// Returns `null` if [buffer] does not yet hold a complete frame (caller should
 /// read more bytes). Throws [FormatException] if the magic does not match
-/// (wrong protocol / corrupt stream).
+/// (wrong protocol / corrupt stream), the frame type is unknown, or the payload
+/// is not a UTF-8 encoded JSON object.
 DecodedFrame? decodeFrame(List<int> buffer) {
   if (buffer.length < kFrameHeaderSize) return null;
 
@@ -192,9 +193,12 @@ DecodedFrame? decodeFrame(List<int> buffer) {
   } else {
     final payloadBytes = buffer.sublist(kFrameHeaderSize, total);
     final decoded = json.decode(utf8.decode(payloadBytes));
-    payload = decoded is Map<String, dynamic>
-        ? decoded
-        : Map<String, dynamic>.from(decoded as Map);
+    if (decoded is! Map<String, dynamic>) {
+      throw FormatException(
+        'Frame payload is not a JSON object: ${decoded.runtimeType}',
+      );
+    }
+    payload = decoded;
   }
 
   return DecodedFrame(Frame(type, payload), total);
