@@ -573,10 +573,25 @@ void main() {
   });
 
   group('close() of a listener', () {
-    Future<void> expectRefused(int port) => expectLater(
-      Socket.connect('localhost', port),
-      throwsA(isA<SocketException>()),
-    );
+    /// Expects [port] to refuse connections. `ServerSocket.close()` completes
+    /// asynchronously, so a connect issued right after `close()` may still be
+    /// accepted (and then dropped by the closed listener): retry until refused.
+    Future<void> expectRefused(int port) async {
+      final deadline = DateTime.now().add(_timeout);
+      while (true) {
+        final Socket socket;
+        try {
+          socket = await Socket.connect('localhost', port);
+        } on SocketException {
+          return;
+        }
+        socket.destroy();
+        if (DateTime.now().isAfter(deadline)) {
+          fail('Port $port still accepts connections after close()');
+        }
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+      }
+    }
 
     /// An echo tunnel through a [TunnelLocalServer], proven live.
     Future<(TunnelLocalServer, Peer, Target)> localTunnel() async {
