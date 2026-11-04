@@ -51,6 +51,14 @@ class TunnelLocalServer {
       rethrow;
     }
 
+    // [close] ran while binding: release the port instead of serving
+    // ([boundPort] stays `null`).
+    if (_closed) {
+      _server = null;
+      await server.close();
+      return;
+    }
+
     server.listen(_onAccept);
 
     _log.info('** Started: $this');

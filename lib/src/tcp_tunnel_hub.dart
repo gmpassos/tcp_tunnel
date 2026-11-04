@@ -232,6 +232,15 @@ class TunnelHub {
       '0.0.0.0',
       controlPort,
     );
+
+    // [close] ran while binding: release the port instead of serving
+    // ([boundControlPort] stays `null`).
+    if (_closed) {
+      _controlServer = null;
+      await controlServer.close();
+      return;
+    }
+
     // Accept inside the guarded zone so a stray socket error during the TLS
     // handshake or a REJECT/close teardown is logged, not left unhandled (it
     // would otherwise surface in whatever zone called [start]).

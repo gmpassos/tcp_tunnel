@@ -676,8 +676,9 @@ void main() {
       return (bridge, a, b);
     }
 
-    /// An echo tunnel through a [TunnelHub] public port, proven live.
-    Future<(TunnelHub, Peer, Target)> hubTunnel() async {
+    /// An echo tunnel through a [TunnelHub] public port, served by a
+    /// [TunnelServerAgent], proven live.
+    Future<(TunnelHub, Peer, Target, TunnelServerAgent)> hubTunnel() async {
       final echo = await Target.bind(echo: true);
       addTearDown(echo.close);
       final hub = TunnelHub(0, servicePorts: {'svc': 0});
@@ -699,7 +700,28 @@ void main() {
       addTearDown(client.destroy);
       await client.sendText('before ');
       await until(() => client.text == 'before ');
-      return (hub, client, echo);
+      return (hub, client, echo, agent);
+    }
+
+    /// A tunnel through a [TunnelClientAgent] to a stand-in hub (a plain
+    /// listener recording each agent connection), proven live: the stand-in
+    /// sees the agent's HELLO followed by the application's bytes.
+    Future<(TunnelClientAgent, Peer, Target)> clientAgentTunnel() async {
+      final fakeHub = await Target.bind();
+      addTearDown(fakeHub.close);
+      final agent = TunnelClientAgent('localhost', fakeHub.port, 'svc', 0);
+      await agent.start();
+      addTearDown(agent.close);
+
+      final app = await Peer.connect(agent.boundListenPort!);
+      addTearDown(app.destroy);
+      await app.sendText('before');
+      await until(
+        () =>
+            fakeHub.peers.length == 1 &&
+            fakeHub.peers.single.text.endsWith('before'),
+      );
+      return (agent, app, fakeHub);
     }
 
     test(
@@ -763,7 +785,7 @@ void main() {
 
     test('TunnelHub closes the listeners, parked agent connections, waiting '
         'clients and active tunnels', () async {
-      final (hub, client, echo) = await hubTunnel();
+      final (hub, client, echo, _) = await hubTunnel();
       final controlPort = hub.boundControlPort!;
       final publicPort = hub.boundPorts['svc']!;
 
@@ -832,7 +854,7 @@ void main() {
 
     test('TunnelHub close(closeActiveTunnels: false) keeps them until a later '
         'close()', () async {
-      final (hub, client, echo) = await hubTunnel();
+      final (hub, client, echo, _) = await hubTunnel();
       final controlPort = hub.boundControlPort!;
 
       hub.close(closeActiveTunnels: false);
@@ -845,6 +867,148 @@ void main() {
       hub.close();
       await client.done;
       await echo.peers.single.done;
+    });
+
+    test('TunnelClientAgent closes the listener and its active tunnels, '
+        'idempotently', () async {
+      final (agent, app, fakeHub) = await clientAgentTunnel();
+      final port = agent.boundListenPort!;
+
+      agent.close();
+      agent.close(); // a second close is a no-op
+      await expectRefused(port);
+      await app.done;
+      await fakeHub.peers.single.done;
+      // Nothing new was dialed after close().
+      expect(fakeHub.peers, hasLength(1));
+    });
+
+    test('TunnelClientAgent close(closeActiveTunnels: false) keeps them '
+        'until a later close()', () async {
+      final (agent, app, fakeHub) = await clientAgentTunnel();
+      final port = agent.boundListenPort!;
+
+      agent.close(closeActiveTunnels: false);
+      await expectRefused(port);
+
+      await fakeHub.peers.single.sendText('pong');
+      await until(() => app.text == 'pong');
+      expect(app.isDone || fakeHub.peers.single.isDone, isFalse);
+
+      agent.close();
+      await app.done;
+      await fakeHub.peers.single.done;
+    });
+
+    test('TunnelClientAgent closes an app connection still dialing the hub, '
+        'and drops the hub connection once that connect completes', () async {
+      // A stand-in TLS hub that holds the handshake until told to finish it,
+      // so the agent's hub connect is pending when close() runs.
+      final rawHub = await ServerSocket.bind('localhost', 0);
+      addTearDown(rawHub.close);
+      final accepted = <Socket>[];
+      rawHub.listen(accepted.add);
+      addTearDown(() {
+        for (final s in accepted) {
+          s.destroy();
+        }
+      });
+
+      final agent = TunnelClientAgent(
+        'localhost',
+        rawHub.port,
+        'svc',
+        0,
+        securityContext: SecurityContext(withTrustedRoots: false),
+        onBadCertificate: (_) => true,
+      );
+      await agent.start();
+      addTearDown(agent.close);
+
+      final app = await Peer.connect(agent.boundListenPort!);
+      addTearDown(app.destroy);
+      await until(() => accepted.length == 1);
+
+      agent.close();
+      await app.done;
+
+      // Finish the handshake: the agent must drop the late hub connection
+      // without sending its HELLO. (A reset racing the handshake's last
+      // message fails it instead, which also means the agent dropped it.)
+      final hubContext = SecurityContext()
+        ..useCertificateChain('test/certs/cert.pem')
+        ..usePrivateKey('test/certs/key.pem');
+      final SecureSocket secure;
+      try {
+        secure = await SecureSocket.secureServer(
+          accepted.single,
+          hubContext,
+        ).timeout(_timeout);
+      } on TimeoutException {
+        rethrow;
+      } catch (_) {
+        return;
+      }
+      final hubSide = Peer(secure);
+      addTearDown(hubSide.destroy);
+      await hubSide.done;
+      expect(hubSide.length, 0);
+    });
+
+    test('TunnelServerAgent closes its activated tunnels', () async {
+      final (_, client, echo, agent) = await hubTunnel();
+
+      agent.close();
+      agent.close(); // a second close is a no-op
+      await client.done;
+      await echo.peers.single.done;
+    });
+
+    test('TunnelServerAgent close(closeActiveTunnels: false) keeps them until '
+        'a later close()', () async {
+      final (_, client, echo, agent) = await hubTunnel();
+
+      agent.close(closeActiveTunnels: false);
+      await client.sendText('after');
+      await until(() => client.text == 'before after');
+      expect(client.isDone, isFalse);
+
+      agent.close();
+      await client.done;
+      await echo.peers.single.done;
+    });
+
+    test('close() while start() is still binding releases the ports', () async {
+      // Known ports (free a moment ago), so the test can check they are
+      // released even though the bound port getters stay `null`.
+      final ports = [for (var i = 0; i < 5; i++) await releasedPort()];
+      final local = TunnelLocalServer(ports[0], 1);
+      final bridge = TunnelBridge(ports[1], ports[2]);
+      final hub = TunnelHub(ports[3], servicePorts: {'svc': 0});
+      final agent = TunnelClientAgent('localhost', 1, 'svc', ports[4]);
+
+      final starts = [
+        local.start(),
+        bridge.start(),
+        hub.start(),
+        agent.start(),
+      ];
+      local.close();
+      bridge.close();
+      hub.close();
+      agent.close();
+      await Future.wait(starts);
+
+      for (final port in ports) {
+        await expectRefused(port);
+      }
+      expect(local.boundPort, isNull);
+      expect(bridge.boundPort1, isNull);
+      expect(bridge.boundPort2, isNull);
+      expect(hub.boundControlPort, isNull);
+      expect(agent.boundListenPort, isNull);
+      // The hub stopped before binding its public ports.
+      expect(hub.boundPorts, isEmpty);
     });
   });
 
