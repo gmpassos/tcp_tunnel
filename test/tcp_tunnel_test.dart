@@ -5,8 +5,10 @@ import 'dart:typed_data';
 import 'package:tcp_tunnel/tcp_tunnel.dart';
 import 'package:test/test.dart';
 
-/// Binds an ephemeral port, then releases it so it can be reused by a tunnel.
-Future<int> freePort() async {
+/// A port with nothing listening on it (bound to `0`, then released), for
+/// tests that need a connection to be refused. Never bind it again: listeners
+/// bind port `0` and read back the port actually bound.
+Future<int> unusedPort() async {
   var s = await ServerSocket.bind('localhost', 0);
   var port = s.port;
   await s.close();
@@ -47,10 +49,11 @@ class RecordingServer {
     });
   }
 
-  static Future<RecordingServer> bind(
-    int port, {
-    String host = 'localhost',
-  }) async => RecordingServer._(await ServerSocket.bind(host, port));
+  /// Binds an OS-chosen port on [host]; see [port].
+  static Future<RecordingServer> bind({String host = 'localhost'}) async =>
+      RecordingServer._(await ServerSocket.bind(host, 0));
+
+  int get port => server.port;
 
   /// All received bytes for the first connection, flattened.
   List<int> get firstFlat =>
@@ -59,9 +62,9 @@ class RecordingServer {
   Future<void> close() => server.close().then((_) {});
 }
 
-/// Echoes back every byte it receives.
-Future<ServerSocket> echoServer(int port) async {
-  var server = await ServerSocket.bind('localhost', port);
+/// Echoes back every byte it receives, on an OS-chosen port.
+Future<ServerSocket> echoServer() async {
+  var server = await ServerSocket.bind('localhost', 0);
   server.listen((socket) {
     socket.listen(socket.add, onError: (_) {}, onDone: socket.close);
   });
@@ -71,12 +74,12 @@ Future<ServerSocket> echoServer(int port) async {
 void main() {
   group('TunnelLocalServer', () {
     test('forwards client data to target (one direction)', () async {
-      final serverPort = await freePort();
-      final server = await RecordingServer.bind(serverPort);
+      final server = await RecordingServer.bind();
+      final serverPort = server.port;
 
-      final localPort = await freePort();
-      final tunnel = TunnelLocalServer(localPort, serverPort);
+      final tunnel = TunnelLocalServer(0, serverPort);
       await tunnel.start();
+      final localPort = tunnel.boundPort!;
 
       final socket = await Socket.connect('localhost', localPort);
       socket.add([1, 2, 3, 4, 5]);
@@ -98,12 +101,12 @@ void main() {
     });
 
     test('forwards data in both directions (echo target)', () async {
-      final echoPort = await freePort();
-      final echo = await echoServer(echoPort);
+      final echo = await echoServer();
+      final echoPort = echo.port;
 
-      final localPort = await freePort();
-      final tunnel = TunnelLocalServer(localPort, echoPort);
+      final tunnel = TunnelLocalServer(0, echoPort);
       await tunnel.start();
+      final localPort = tunnel.boundPort!;
 
       final received = <int>[];
       final socket = await Socket.connect('localhost', localPort);
@@ -124,17 +127,17 @@ void main() {
     });
 
     test('close() before start() does not throw', () async {
-      final tunnel = TunnelLocalServer(await freePort(), await freePort());
+      final tunnel = TunnelLocalServer(0, 0);
       expect(tunnel.close, returnsNormally);
     });
 
     test('supports multiple concurrent clients', () async {
-      final serverPort = await freePort();
-      final server = await RecordingServer.bind(serverPort);
+      final server = await RecordingServer.bind();
+      final serverPort = server.port;
 
-      final localPort = await freePort();
-      final tunnel = TunnelLocalServer(localPort, serverPort);
+      final tunnel = TunnelLocalServer(0, serverPort);
       await tunnel.start();
+      final localPort = tunnel.boundPort!;
 
       final s1 = await Socket.connect('localhost', localPort);
       final s2 = await Socket.connect('localhost', localPort);
@@ -162,10 +165,10 @@ void main() {
 
   group('TunnelBridge', () {
     test('connects two queued sockets and relays both directions', () async {
-      final port1 = await freePort();
-      final port2 = await freePort();
-      final bridge = TunnelBridge(port1, port2);
+      final bridge = TunnelBridge(0, 0);
       await bridge.start();
+      final port1 = bridge.boundPort1!;
+      final port2 = bridge.boundPort2!;
 
       final a = await Socket.connect('localhost', port1);
       final b = await Socket.connect('localhost', port2);
@@ -194,15 +197,15 @@ void main() {
     });
 
     test('close() before start() does not throw', () async {
-      final bridge = TunnelBridge(await freePort(), await freePort());
+      final bridge = TunnelBridge(0, 0);
       expect(bridge.close, returnsNormally);
     });
 
     test('pairs sockets in arrival order (FIFO queues)', () async {
-      final port1 = await freePort();
-      final port2 = await freePort();
-      final bridge = TunnelBridge(port1, port2);
+      final bridge = TunnelBridge(0, 0);
       await bridge.start();
+      final port1 = bridge.boundPort1!;
+      final port2 = bridge.boundPort2!;
 
       // Two connections on side 1 before any on side 2.
       final a1 = await Socket.connect('localhost', port1);
@@ -239,13 +242,13 @@ void main() {
 
   group('Tunnel', () {
     test('withSockets relays data between two live sockets', () async {
-      final p1 = await freePort();
-      final server1 = await ServerSocket.bind('localhost', p1);
+      final server1 = await ServerSocket.bind('localhost', 0);
+      final p1 = server1.port;
       final acceptA = Completer<Socket>();
       server1.listen(acceptA.complete);
 
-      final p2 = await freePort();
-      final server2 = await ServerSocket.bind('localhost', p2);
+      final server2 = await ServerSocket.bind('localhost', 0);
+      final p2 = server2.port;
       final acceptB = Completer<Socket>();
       server2.listen(acceptB.complete);
 
@@ -275,13 +278,13 @@ void main() {
     });
 
     test('close() is idempotent and notifies onClose once', () async {
-      final p1 = await freePort();
-      final server1 = await ServerSocket.bind('localhost', p1);
+      final server1 = await ServerSocket.bind('localhost', 0);
+      final p1 = server1.port;
       final acceptA = Completer<Socket>();
       server1.listen(acceptA.complete);
 
-      final p2 = await freePort();
-      final server2 = await ServerSocket.bind('localhost', p2);
+      final server2 = await ServerSocket.bind('localhost', 0);
+      final p2 = server2.port;
       final acceptB = Completer<Socket>();
       server2.listen(acceptB.complete);
 
@@ -312,23 +315,22 @@ void main() {
 
   group('Full chain (bridge + client + local)', () {
     test('relays data through bridge both directions', () async {
-      final echoPort = await freePort();
-      final echo = await echoServer(echoPort);
+      final echo = await echoServer();
+      final echoPort = echo.port;
 
-      final bridgePort1 = await freePort();
-      final bridgePort2 = await freePort();
-      final localPort = await freePort();
-
-      final bridge = TunnelBridge(bridgePort1, bridgePort2);
+      final bridge = TunnelBridge(0, 0);
       await bridge.start();
+      final bridgePort1 = bridge.boundPort1!;
+      final bridgePort2 = bridge.boundPort2!;
 
       // Client connects bridge side 1 to the echo server.
       final clientTunnel = Tunnel.connect('localhost', bridgePort1, echoPort);
       await clientTunnel.onReady;
 
       // Local server exposes bridge side 2 locally.
-      final local = TunnelLocalServer(localPort, bridgePort2);
+      final local = TunnelLocalServer(0, bridgePort2);
       await local.start();
+      final localPort = local.boundPort!;
       await _wait();
 
       final received = <int>[];
@@ -357,9 +359,8 @@ void main() {
 
   group('Connection failures', () {
     test('connect fires onClose when remote is unreachable', () async {
-      final deadRemote =
-          await freePort(); // bound then released: nothing listening
-      final target = await freePort();
+      final deadRemote = await unusedPort(); // nothing listening
+      final target = await unusedPort(); // never reached
 
       final closed = Completer<void>();
       Tunnel.connect(
@@ -377,11 +378,11 @@ void main() {
 
     test('connectAsync fires onClose when target is unreachable', () async {
       // A remote that immediately sends data, triggering the lazy target connect.
-      final remotePort = await freePort();
-      final remote = await ServerSocket.bind('localhost', remotePort);
+      final remote = await ServerSocket.bind('localhost', 0);
+      final remotePort = remote.port;
       remote.listen((s) => s.add([1, 2, 3]));
 
-      final deadTarget = await freePort(); // nothing listening
+      final deadTarget = await unusedPort(); // nothing listening
 
       final closed = Completer<void>();
       Tunnel.connectAsync(
@@ -402,14 +403,14 @@ void main() {
 
   group('Lazy connect (connectAsync)', () {
     test('connects target only after first remote data arrives', () async {
-      final remotePort = await freePort();
-      final remote = await ServerSocket.bind('localhost', remotePort);
+      final remote = await ServerSocket.bind('localhost', 0);
+      final remotePort = remote.port;
       Socket? remoteSide;
       remote.listen((s) => remoteSide = s);
 
       var targetConnections = 0;
-      final targetPort = await freePort();
-      final target = await ServerSocket.bind('localhost', targetPort);
+      final target = await ServerSocket.bind('localhost', 0);
+      final targetPort = target.port;
       target.listen((_) => targetConnections++);
 
       final tunnel = Tunnel.connectAsync('localhost', remotePort, targetPort);
@@ -441,12 +442,12 @@ void main() {
 
   group('Backpressure', () {
     test('transfers a large payload intact through a tunnel', () async {
-      final echoPort = await freePort();
-      final echo = await echoServer(echoPort);
+      final echo = await echoServer();
+      final echoPort = echo.port;
 
-      final localPort = await freePort();
-      final tunnel = TunnelLocalServer(localPort, echoPort);
+      final tunnel = TunnelLocalServer(0, echoPort);
       await tunnel.start();
+      final localPort = tunnel.boundPort!;
 
       const size = 4 * 1024 * 1024; // 4 MiB, well past socket buffers.
       final payload = Uint8List(size);
@@ -482,10 +483,10 @@ void main() {
 
   group('TunnelBridge eviction', () {
     test('a queued socket that closes before pairing is not paired', () async {
-      final port1 = await freePort();
-      final port2 = await freePort();
-      final bridge = TunnelBridge(port1, port2);
+      final bridge = TunnelBridge(0, 0);
       await bridge.start();
+      final port1 = bridge.boundPort1!;
+      final port2 = bridge.boundPort2!;
 
       // A connection on side 1 with no peer yet, then closed while queued.
       final dead = await Socket.connect('localhost', port1);
@@ -536,16 +537,16 @@ void main() {
       // Remote sends data on connect; that first data both triggers the lazy
       // target connect AND must be delivered to the target (it is buffered as
       // an unflushed write until the target socket resolves).
-      final remotePort = await freePort();
-      final remote = await ServerSocket.bind('localhost', remotePort);
+      final remote = await ServerSocket.bind('localhost', 0);
+      final remotePort = remote.port;
       Socket? remoteSide;
       remote.listen((s) {
         remoteSide = s;
         s.add('HELLO'.codeUnits);
       });
 
-      final targetPort = await freePort();
-      final target = await RecordingServer.bind(targetPort);
+      final target = await RecordingServer.bind();
+      final targetPort = target.port;
 
       final tunnel = Tunnel.connectAsync('localhost', remotePort, targetPort);
       await tunnel.onReady.timeout(Duration(seconds: 5));
@@ -570,8 +571,8 @@ void main() {
     });
 
     test('bidirectional round-trip and onReady completes', () async {
-      final remotePort = await freePort();
-      final remote = await ServerSocket.bind('localhost', remotePort);
+      final remote = await ServerSocket.bind('localhost', 0);
+      final remotePort = remote.port;
       final remoteReceived = <int>[];
       final remoteSideReady = Completer<Socket>();
       remote.listen((s) {
@@ -579,8 +580,8 @@ void main() {
         s.listen(remoteReceived.addAll);
       });
 
-      final echoPort = await freePort();
-      final echo = await echoServer(echoPort);
+      final echo = await echoServer();
+      final echoPort = echo.port;
 
       final tunnel = Tunnel.connectAsync('localhost', remotePort, echoPort);
       final remoteSide = await remoteSideReady.future.timeout(
@@ -603,10 +604,10 @@ void main() {
 
   group('TunnelBridge buffering and isolation', () {
     test('data sent while queued is delivered after pairing', () async {
-      final port1 = await freePort();
-      final port2 = await freePort();
-      final bridge = TunnelBridge(port1, port2);
+      final bridge = TunnelBridge(0, 0);
       await bridge.start();
+      final port1 = bridge.boundPort1!;
+      final port2 = bridge.boundPort2!;
 
       // 'a' connects and sends data before any peer exists on side 2.
       final a = await Socket.connect('localhost', port1);
@@ -636,10 +637,10 @@ void main() {
 
     test('many concurrent pairs stay isolated (FIFO)', () async {
       const n = 10;
-      final port1 = await freePort();
-      final port2 = await freePort();
-      final bridge = TunnelBridge(port1, port2);
+      final bridge = TunnelBridge(0, 0);
       await bridge.start();
+      final port1 = bridge.boundPort1!;
+      final port2 = bridge.boundPort2!;
 
       // Connect all side-1 sockets first (in order), then all side-2 sockets,
       // so FIFO pairing maps index i on side 1 to index i on side 2.
@@ -679,10 +680,10 @@ void main() {
     });
 
     test('closing one paired socket tears down its peer', () async {
-      final port1 = await freePort();
-      final port2 = await freePort();
-      final bridge = TunnelBridge(port1, port2);
+      final bridge = TunnelBridge(0, 0);
       await bridge.start();
+      final port1 = bridge.boundPort1!;
+      final port2 = bridge.boundPort2!;
 
       final a = await Socket.connect('localhost', port1);
       final b = await Socket.connect('localhost', port2);
@@ -710,10 +711,10 @@ void main() {
     test(
       'drops the client connection when the target is unreachable',
       () async {
-        final localPort = await freePort();
-        final deadTarget = await freePort(); // nothing listening
-        final server = TunnelLocalServer(localPort, deadTarget);
+        final deadTarget = await unusedPort(); // nothing listening
+        final server = TunnelLocalServer(0, deadTarget);
         await server.start();
+        final localPort = server.boundPort!;
 
         final socket = await Socket.connect('localhost', localPort);
         final done = Completer<void>();
@@ -737,13 +738,13 @@ void main() {
 
   group('Callbacks and options', () {
     test('onStart fires once with the tunnel', () async {
-      final p1 = await freePort();
-      final server1 = await ServerSocket.bind('localhost', p1);
+      final server1 = await ServerSocket.bind('localhost', 0);
+      final p1 = server1.port;
       final acceptA = Completer<Socket>();
       server1.listen(acceptA.complete);
 
-      final p2 = await freePort();
-      final server2 = await ServerSocket.bind('localhost', p2);
+      final server2 = await ServerSocket.bind('localhost', 0);
+      final p2 = server2.port;
       final acceptB = Completer<Socket>();
       server2.listen(acceptB.complete);
 
@@ -774,12 +775,12 @@ void main() {
     });
 
     test('verbose tunnel still forwards data', () async {
-      final serverPort = await freePort();
-      final server = await RecordingServer.bind(serverPort);
+      final server = await RecordingServer.bind();
+      final serverPort = server.port;
 
-      final localPort = await freePort();
-      final tunnel = TunnelLocalServer(localPort, serverPort, verbose: true);
+      final tunnel = TunnelLocalServer(0, serverPort, verbose: true);
       await tunnel.start();
+      final localPort = tunnel.boundPort!;
 
       final socket = await Socket.connect('localhost', localPort);
       socket.add([1, 2, 3]);
@@ -794,18 +795,14 @@ void main() {
     });
 
     test('custom targetHost forwards correctly', () async {
-      final serverPort = await freePort();
       // Bind the backend on the same explicit IP the tunnel will target, so the
       // test does not depend on how 'localhost' resolves (IPv4 vs IPv6).
-      final server = await RecordingServer.bind(serverPort, host: '127.0.0.1');
+      final server = await RecordingServer.bind(host: '127.0.0.1');
+      final serverPort = server.port;
 
-      final localPort = await freePort();
-      final tunnel = TunnelLocalServer(
-        localPort,
-        serverPort,
-        targetHost: '127.0.0.1',
-      );
+      final tunnel = TunnelLocalServer(0, serverPort, targetHost: '127.0.0.1');
       await tunnel.start();
+      final localPort = tunnel.boundPort!;
 
       final socket = await Socket.connect('localhost', localPort);
       socket.add([9, 8, 7]);
@@ -822,12 +819,12 @@ void main() {
 
   group('Data edge cases', () {
     test('half-close: data written before close still drains', () async {
-      final serverPort = await freePort();
-      final server = await RecordingServer.bind(serverPort);
+      final server = await RecordingServer.bind();
+      final serverPort = server.port;
 
-      final localPort = await freePort();
-      final tunnel = TunnelLocalServer(localPort, serverPort);
+      final tunnel = TunnelLocalServer(0, serverPort);
       await tunnel.start();
+      final localPort = tunnel.boundPort!;
 
       final socket = await Socket.connect('localhost', localPort);
       socket.add([1, 2, 3, 4, 5]);
@@ -848,12 +845,12 @@ void main() {
     });
 
     test('zero-length write is tolerated', () async {
-      final serverPort = await freePort();
-      final server = await RecordingServer.bind(serverPort);
+      final server = await RecordingServer.bind();
+      final serverPort = server.port;
 
-      final localPort = await freePort();
-      final tunnel = TunnelLocalServer(localPort, serverPort);
+      final tunnel = TunnelLocalServer(0, serverPort);
       await tunnel.start();
+      final localPort = tunnel.boundPort!;
 
       final socket = await Socket.connect('localhost', localPort);
       socket.add(<int>[]); // empty
@@ -871,13 +868,13 @@ void main() {
     });
 
     test('withSockets relays in the reverse direction (B to A)', () async {
-      final p1 = await freePort();
-      final server1 = await ServerSocket.bind('localhost', p1);
+      final server1 = await ServerSocket.bind('localhost', 0);
+      final p1 = server1.port;
       final acceptA = Completer<Socket>();
       server1.listen(acceptA.complete);
 
-      final p2 = await freePort();
-      final server2 = await ServerSocket.bind('localhost', p2);
+      final server2 = await ServerSocket.bind('localhost', 0);
+      final p2 = server2.port;
       final acceptB = Completer<Socket>();
       server2.listen(acceptB.complete);
 
@@ -907,10 +904,10 @@ void main() {
     });
 
     test('large bidirectional transfer stays intact', () async {
-      final port1 = await freePort();
-      final port2 = await freePort();
-      final bridge = TunnelBridge(port1, port2);
+      final bridge = TunnelBridge(0, 0);
       await bridge.start();
+      final port1 = bridge.boundPort1!;
+      final port2 = bridge.boundPort2!;
 
       final a = await Socket.connect('localhost', port1);
       final b = await Socket.connect('localhost', port2);
@@ -969,8 +966,8 @@ void main() {
 
   group('SocketAsync', () {
     test('getters reflect resolved vs unresolved state', () async {
-      final p = await freePort();
-      final srv = await ServerSocket.bind('localhost', p);
+      final srv = await ServerSocket.bind('localhost', 0);
+      final p = srv.port;
       final acceptC = Completer<Socket>();
       srv.listen(acceptC.complete);
       final client = await Socket.connect('localhost', p);

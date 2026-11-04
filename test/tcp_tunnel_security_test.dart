@@ -9,13 +9,6 @@ const _certPath = 'test/certs/cert.pem';
 const _keyPath = 'test/certs/key.pem';
 const _token = 's3cret-token';
 
-Future<int> freePort() async {
-  var s = await ServerSocket.bind('localhost', 0);
-  var port = s.port;
-  await s.close();
-  return port;
-}
-
 Future<void> _wait([int ms = 30]) => Future.delayed(Duration(milliseconds: ms));
 
 /// Polls [condition] until true or [timeoutMs] elapses.
@@ -88,15 +81,13 @@ void main() {
   group('authentication (token)', () {
     test('valid token over TLS: end-to-end pipe works', () async {
       final echo = await EchoServer.bind();
-      final controlPort = await freePort();
-      final listenPort = await freePort();
-
       final hub = TunnelHub(
-        controlPort,
+        0,
         securityContext: _hubContext(),
         authToken: _token,
       );
       await hub.start();
+      final controlPort = hub.boundControlPort!;
 
       final publisher = TunnelServerAgent(
         'localhost',
@@ -113,12 +104,13 @@ void main() {
         'localhost',
         controlPort,
         'svc',
-        listenPort,
+        0,
         securityContext: _agentContext(),
         onBadCertificate: _acceptCert,
         authToken: _token,
       );
       await consumer.start();
+      final listenPort = consumer.boundListenPort!;
 
       await _wait(200); // let the pool register
 
@@ -138,14 +130,13 @@ void main() {
       'wrong token: publisher is rejected, service never registers',
       () async {
         final echo = await EchoServer.bind();
-        final controlPort = await freePort();
-
         final hub = TunnelHub(
-          controlPort,
+          0,
           securityContext: _hubContext(),
           authToken: _token,
         );
         await hub.start();
+        final controlPort = hub.boundControlPort!;
 
         String? rejectReason;
         final publisher = TunnelServerAgent(
@@ -172,11 +163,9 @@ void main() {
 
     test('token without TLS still authenticates', () async {
       final echo = await EchoServer.bind();
-      final controlPort = await freePort();
-      final listenPort = await freePort();
-
-      final hub = TunnelHub(controlPort, authToken: _token);
+      final hub = TunnelHub(0, authToken: _token);
       await hub.start();
+      final controlPort = hub.boundControlPort!;
 
       final publisher = TunnelServerAgent(
         'localhost',
@@ -191,10 +180,11 @@ void main() {
         'localhost',
         controlPort,
         'svc',
-        listenPort,
+        0,
         authToken: _token,
       );
       await consumer.start();
+      final listenPort = consumer.boundListenPort!;
 
       await _wait(200);
 
@@ -214,15 +204,13 @@ void main() {
   group('transport encryption (TLS)', () {
     test('plaintext publisher against a TLS hub never registers', () async {
       final echo = await EchoServer.bind();
-      final controlPort = await freePort();
-      final listenPort = await freePort();
-
       final hub = TunnelHub(
-        controlPort,
+        0,
         securityContext: _hubContext(),
         clientWaitTimeout: const Duration(seconds: 2),
       );
       await hub.start();
+      final controlPort = hub.boundControlPort!;
 
       // Publisher dials plaintext: the hub's TLS handshake fails and the
       // connection is dropped, so the service is never registered.
@@ -238,11 +226,12 @@ void main() {
         'localhost',
         controlPort,
         'svc',
-        listenPort,
+        0,
         securityContext: _agentContext(),
         onBadCertificate: _acceptCert,
       );
       await consumer.start();
+      final listenPort = consumer.boundListenPort!;
 
       await _wait(300);
 
