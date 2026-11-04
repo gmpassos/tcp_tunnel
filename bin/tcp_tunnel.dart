@@ -64,8 +64,34 @@ void main(List<String> args) {
   _setupGracefulShutdown();
 
   Tunnel.runGuarded(() {
-    _run(mode, args, loop, verbose);
+    // Invalid arguments must terminate the CLI: if they reached the guarded
+    // zone they would only be logged, and the signal watchers would keep the
+    // process alive forever.
+    try {
+      _run(mode, args, loop, verbose);
+    } on ArgumentError catch (e) {
+      _exitError('${e.message ?? e}');
+    } on FormatException catch (e) {
+      _exitError(e.message);
+    } on IOException catch (e) {
+      // E.g. an unreadable --token-file or TLS certificate/key.
+      _exitError(e.toString());
+    }
   });
+}
+
+/// Prints [message] and exits with status `1`.
+Never _exitError(String message) {
+  print('** Error: $message');
+  print('   Run `tcp_tunnel` without arguments to see the usage.');
+  exit(1);
+}
+
+/// Exits with status `1` when [what] fails to start (e.g. a port that cannot
+/// be bound), instead of leaving an idle process running.
+Never _exitStartFailure(String what, Object error) {
+  print('** Failed to start $what: $error');
+  exit(1);
 }
 
 /// Actions to run on shutdown (close active servers/tunnels).
@@ -121,8 +147,8 @@ void _run(String mode, List<String> args, bool loop, bool verbose) {
   print('-- Mode: $mode');
 
   if (mode == 'local') {
-    var listenPort = int.parse(args[0]);
-    var targetPort = int.parse(args[1]);
+    var listenPort = _positionalInt(args, 0, 'listenPort');
+    var targetPort = _positionalInt(args, 1, 'targetPort');
     var targetHost = args.length > 2 ? args[2] : 'localhost';
 
     print('-- Listen port: $listenPort');
@@ -137,16 +163,19 @@ void _run(String mode, List<String> args, bool loop, bool verbose) {
       verbose: verbose,
     );
     _shutdownActions.add(localServer.close);
-    localServer.start();
-    _printHowToUse('local', [
-      'Forwards local port $listenPort to $targetHost:$targetPort.',
-      'Point your client at this machine, e.g.:',
-      '  <your-client> --host localhost --port $listenPort',
-    ]);
+    localServer.start().then((_) {
+      var port = localServer.boundPort;
+      print('-- Listening on port: $port');
+      _printHowToUse('local', [
+        'Forwards local port $port to $targetHost:$targetPort.',
+        'Point your client at this machine, e.g.:',
+        '  <your-client> --host localhost --port $port',
+      ]);
+    }, onError: (Object e) => _exitStartFailure('local server', e));
   } else if (mode == 'client') {
-    var remoteHost = args[0];
-    var remotePort = int.parse(args[1]);
-    var localTargetPort = int.parse(args[2]);
+    var remoteHost = _positional(args, 0, 'remoteHost');
+    var remotePort = _positionalInt(args, 1, 'remotePort');
+    var localTargetPort = _positionalInt(args, 2, 'localTargetPort');
 
     // optional 4th arg
     var maxTunnels = _parseMaxTunnels(args);
@@ -182,8 +211,8 @@ void _run(String mode, List<String> args, bool loop, bool verbose) {
           'bridge\'s other port reaches localhost:$localTargetPort here.',
     ]);
   } else if (mode == 'bridge') {
-    var listenPort1 = int.parse(args[0]);
-    var listenPort2 = int.parse(args[1]);
+    var listenPort1 = _positionalInt(args, 0, 'listenPort1');
+    var listenPort2 = _positionalInt(args, 1, 'listenPort2');
 
     print('-- Listen port 1: $listenPort1');
     print('-- Listen port 2: $listenPort2');
@@ -191,13 +220,17 @@ void _run(String mode, List<String> args, bool loop, bool verbose) {
 
     var bridge = TunnelBridge(listenPort1, listenPort2, verbose: verbose);
     _shutdownActions.add(bridge.close);
-    bridge.start();
-    _printHowToUse('bridge', [
-      'Pairs connections accepted on port $listenPort1 with connections '
-          'accepted on port $listenPort2 (FIFO), piping them together.',
-      'Typical use: a "client" tunnel connects to one port while consumers '
-          'connect to the other.',
-    ]);
+    bridge.start().then((_) {
+      var port1 = bridge.boundPort1;
+      var port2 = bridge.boundPort2;
+      print('-- Listening on ports: $port1, $port2');
+      _printHowToUse('bridge', [
+        'Pairs connections accepted on port $port1 with connections '
+            'accepted on port $port2 (FIFO), piping them together.',
+        'Typical use: a "client" tunnel connects to one port while consumers '
+            'connect to the other.',
+      ]);
+    }, onError: (Object e) => _exitStartFailure('bridge', e));
   } else if (mode == 'hub') {
     var controlPort = _parseArgInt(args, [
       '--control-port',
@@ -236,14 +269,16 @@ void _run(String mode, List<String> args, bool loop, bool verbose) {
       verbose: verbose,
     );
     _shutdownActions.add(hub.close);
-    hub.start().then(
-      (_) => _printHubUsage(
-        controlPort,
+    hub.start().then((_) {
+      var boundControlPort = hub.boundControlPort ?? controlPort;
+      print('-- Listening on control port: $boundControlPort');
+      _printHubUsage(
+        boundControlPort,
         hub.boundPorts,
         dynamic: dynamicMap,
         portRange: portRange,
-      ),
-    );
+      );
+    }, onError: (Object e) => _exitStartFailure('hub', e));
   } else if (mode == 'publish') {
     var hub = _parseHostPort(args, '--hub');
     var service = _parseArgStr(args, ['--service'], required: true)!;
@@ -311,8 +346,11 @@ void _run(String mode, List<String> args, bool loop, bool verbose) {
       verbose: verbose,
     );
     _shutdownActions.add(agent.close);
-    agent.start();
-    _printConnectUsage(hub, service, listenPort);
+    agent.start().then((_) {
+      var port = agent.boundListenPort ?? listenPort;
+      print('-- Listening on port: $port');
+      _printConnectUsage(hub, service, port);
+    }, onError: (Object e) => _exitStartFailure('connect agent', e));
   } else {
     print('** Unknown mode: $mode');
     exit(1);
@@ -410,8 +448,10 @@ PortRange? _parsePortRange(List<String> args) {
   try {
     return PortRange.parse(value);
   } catch (e) {
+    final reason = e is FormatException ? e.message : '$e';
     throw ArgumentError(
-      'Invalid --port-range "$value", expected start-end (e.g. 20000-20100): $e',
+      'Invalid --port-range "$value", expected start-end '
+      '(e.g. 20000-20100): $reason',
     );
   }
 }
@@ -631,10 +671,35 @@ int _parseArgInt(
       if (i + 1 >= args.length) {
         throw ArgumentError('Missing value for $a');
       }
-      return int.tryParse(args[i + 1]) ?? defaultValue;
+      var value = args[i + 1];
+      var n = int.tryParse(value);
+      if (n == null) {
+        throw ArgumentError(
+          'Invalid value for $a: "$value", expected an integer',
+        );
+      }
+      return n;
     }
   }
   return defaultValue;
+}
+
+/// Returns the positional argument at [index], named [name] in errors.
+String _positional(List<String> args, int index, String name) {
+  if (index >= args.length) {
+    throw ArgumentError('Missing argument <$name>');
+  }
+  return args[index];
+}
+
+/// Returns the positional integer argument at [index], named [name] in errors.
+int _positionalInt(List<String> args, int index, String name) {
+  var value = _positional(args, index, name);
+  var n = int.tryParse(value);
+  if (n == null) {
+    throw ArgumentError('Invalid <$name> "$value", expected an integer');
+  }
+  return n;
 }
 
 final _tunnels = <Tunnel>[];

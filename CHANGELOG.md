@@ -1,3 +1,45 @@
+## 2.2.0
+
+- Updated SDK constraint to `^3.13.0`.
+- Updated dependencies (all were already on their latest major; lower bounds
+  raised to the current versions):
+  - `dependency_validator` to ^5.1.0
+  - `test` to ^1.33.0
+- **Ephemeral (port `0`) listeners:** the actually bound port is now exposed,
+  so any listener can be started on an OS-chosen port:
+  `TunnelLocalServer.boundPort`, `TunnelBridge.boundPort1`/`boundPort2`,
+  `TunnelHub.boundControlPort` and `TunnelClientAgent.boundListenPort`.
+- `TunnelBridge.start()`: if the second port cannot be bound, the first one is
+  released again instead of being left listening; a failed `start()` (bridge or
+  `TunnelLocalServer`) can now be retried.
+- `TunnelBridge.close()` now also closes accepted sockets still queued waiting
+  for a peer (already paired tunnels are left running).
+- `PortRange.parse` validates the range (`1..65535`, `start <= end`) and throws a
+  `FormatException`; before, only the constructor's asserts checked it, which
+  are disabled in a compiled (AOT) CLI.
+- CLI (`bin/tcp_tunnel.dart`):
+  - Invalid arguments now print `** Error: <reason>` and exit with status `1`.
+    Previously the error was only logged by the guarded zone and the process
+    stayed alive (idle) forever. Missing/non-numeric positional arguments get a
+    clear message (e.g. `Missing argument <targetPort>`), and a non-numeric
+    value for an integer option (`--control-port`, `--max-tunnels`, `--pool`,
+    `--listen`, ...) is now an error instead of silently using the default.
+  - A listener that fails to start (e.g. port already in use) in `local`,
+    `bridge`, `hub` or `connect` mode prints `** Failed to start ...` and exits
+    with status `1`.
+  - Ports can be `0`: the real bound port is printed (`-- Listening on port: N`,
+    `-- Listening on control port: N`, ...) and used in the "How to use" output.
+- Internal: `SocketAsync` uses a private named initializing formal
+  (`prefer_initializing_formals`, new in the 3.13 lints); `dart format` with the
+  3.13 formatter.
+- Tests: new `test/tcp_tunnel_ephemeral_test.dart` (port-0 integration tests for
+  data flow in both directions, close propagation, bind failures, hub
+  handshake rejection, protocol and `FramedConnection` error paths) and
+  `test/tcp_tunnel_cli_test.dart` (runs the CLI as a child process: usage,
+  argument errors, start failures, and `local`/`bridge`/`hub` modes end to end).
+- CI: `actions/checkout@v7`, `codecov/codecov-action@v7`; tests also run on the
+  minimum SDK (3.13.0).
+
 ## 2.1.0
 
 - **Security layer for hub-mode connections (opt-in, two independent layers):**
