@@ -51,25 +51,71 @@ class TunnelLocalServer {
       rethrow;
     }
 
-    server.listen((Socket socket) {
-      Tunnel.targetPort(
-        socket,
-        targetPort,
-        targetHost: targetHost,
-        verbose: verbose,
-      ).then((tunnel) {
-        if (tunnel != null) {
-          _log.info("-- Connected: $tunnel");
-        }
-      });
-    });
+    server.listen(_onAccept);
 
     _log.info('** Started: $this');
   }
 
-  /// Closes the tunnel server.
-  void close() {
+  /// Accepted sockets whose target connection is still being established.
+  final Set<Socket> _connecting = {};
+
+  /// Tunnels currently running (removed when they close).
+  final Set<Tunnel> _tunnels = {};
+
+  bool _closed = false;
+
+  Future<void> _onAccept(Socket socket) async {
+    if (_closed) {
+      socket.destroy();
+      return;
+    }
+
+    _connecting.add(socket);
+    final tunnel = await Tunnel.targetPort(
+      socket,
+      targetPort,
+      targetHost: targetHost,
+      verbose: verbose,
+    );
+    // Not in [_connecting] anymore: [close] dropped it while connecting.
+    final owned = _connecting.remove(socket);
+    if (tunnel == null) return;
+
+    if (!owned || tunnel.isClosed) {
+      tunnel.close();
+      return;
+    }
+
+    _tunnels.add(tunnel);
+    tunnel.onClose = _tunnels.remove;
+    _log.info("-- Connected: $tunnel");
+  }
+
+  /// Closes the tunnel server: stops listening and, by default, closes every
+  /// tunnel it accepted (including those still connecting to the target).
+  ///
+  /// With [closeActiveTunnels] `false` only the listener is closed and running
+  /// tunnels are left to finish on their own (graceful shutdown); a later
+  /// [close] call closes whatever is still running.
+  void close({bool closeActiveTunnels = true}) {
+    _closed = true;
     _server?.close();
+
+    if (!closeActiveTunnels) return;
+
+    for (var socket in _connecting) {
+      try {
+        socket.destroy();
+      } catch (_) {}
+    }
+    _connecting.clear();
+
+    // Closing a tunnel removes it from [_tunnels] (via `onClose`): iterate a
+    // copy.
+    for (var tunnel in _tunnels.toList()) {
+      tunnel.close();
+    }
+    _tunnels.clear();
   }
 
   @override

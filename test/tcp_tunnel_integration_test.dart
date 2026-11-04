@@ -572,96 +572,190 @@ void main() {
     });
   });
 
-  group(
-    'close() of a listener leaves already paired tunnels running (pinned)',
-    () {
-      test('TunnelLocalServer', () async {
-        final echo = await Target.bind(echo: true);
-        addTearDown(echo.close);
-        final local = TunnelLocalServer(0, echo.port);
-        await local.start();
+  group('close() of a listener', () {
+    Future<void> expectRefused(int port) => expectLater(
+      Socket.connect('localhost', port),
+      throwsA(isA<SocketException>()),
+    );
+
+    /// An echo tunnel through a [TunnelLocalServer], proven live.
+    Future<(TunnelLocalServer, Peer, Target)> localTunnel() async {
+      final echo = await Target.bind(echo: true);
+      addTearDown(echo.close);
+      final local = TunnelLocalServer(0, echo.port);
+      await local.start();
+      addTearDown(local.close);
+
+      final client = await Peer.connect(local.boundPort!);
+      addTearDown(client.destroy);
+      await client.sendText('before ');
+      await until(() => client.text == 'before ');
+      return (local, client, echo);
+    }
+
+    /// A tunnel through a [TunnelBridge], proven live in one direction.
+    Future<(TunnelBridge, Peer, Peer)> bridgeTunnel() async {
+      final bridge = TunnelBridge(0, 0, verbose: true);
+      await bridge.start();
+      addTearDown(bridge.close);
+
+      final a = await Peer.connect(bridge.boundPort1!);
+      final b = await Peer.connect(bridge.boundPort2!);
+      addTearDown(() {
+        a.destroy();
+        b.destroy();
+      });
+      await a.sendText('ping');
+      await until(() => b.text == 'ping');
+      return (bridge, a, b);
+    }
+
+    /// An echo tunnel through a [TunnelHub] public port, proven live.
+    Future<(TunnelHub, Peer, Target)> hubTunnel() async {
+      final echo = await Target.bind(echo: true);
+      addTearDown(echo.close);
+      final hub = TunnelHub(0, servicePorts: {'svc': 0});
+      await hub.start();
+      addTearDown(hub.close);
+
+      final agent = TunnelServerAgent(
+        'localhost',
+        hub.boundControlPort!,
+        'svc',
+        echo.port,
+        poolSize: 1,
+      );
+      await agent.start();
+      addTearDown(agent.close);
+      await until(() => agent.publicPort != null);
+
+      final client = await Peer.connect(hub.boundPorts['svc']!);
+      addTearDown(client.destroy);
+      await client.sendText('before ');
+      await until(() => client.text == 'before ');
+      return (hub, client, echo);
+    }
+
+    test(
+      'TunnelLocalServer closes the listener and its active tunnels',
+      () async {
+        final (local, client, echo) = await localTunnel();
         final port = local.boundPort!;
 
-        final client = await Peer.connect(port);
-        addTearDown(client.destroy);
-        await client.sendText('before ');
-        await until(() => client.text == 'before ');
-
         local.close();
-        await expectLater(
-          Socket.connect('localhost', port),
-          throwsA(isA<SocketException>()),
-        );
+        await expectRefused(port);
+        await client.done;
+        await echo.peers.single.done;
+      },
+    );
 
-        await client.sendText('after');
-        await until(() => client.text == 'before after');
-        expect(client.isDone, isFalse);
-      });
+    test('TunnelLocalServer close(closeActiveTunnels: false) keeps them '
+        'until a later close()', () async {
+      final (local, client, echo) = await localTunnel();
+      final port = local.boundPort!;
 
-      test('TunnelBridge (verbose)', () async {
-        final bridge = TunnelBridge(0, 0, verbose: true);
-        await bridge.start();
-        final port1 = bridge.boundPort1!;
+      local.close(closeActiveTunnels: false);
+      await expectRefused(port);
 
-        final a = await Peer.connect(port1);
-        final b = await Peer.connect(bridge.boundPort2!);
-        addTearDown(() {
-          a.destroy();
-          b.destroy();
-        });
-        await a.sendText('ping');
-        await until(() => b.text == 'ping');
+      await client.sendText('after');
+      await until(() => client.text == 'before after');
+      expect(client.isDone, isFalse);
 
-        bridge.close();
-        await expectLater(
-          Socket.connect('localhost', port1),
-          throwsA(isA<SocketException>()),
-        );
+      local.close();
+      await client.done;
+      await echo.peers.single.done;
+    });
 
-        await b.sendText('pong');
-        await until(() => a.text == 'pong');
-        expect(a.isDone || b.isDone, isFalse);
-      });
+    test('TunnelBridge closes the listeners and its active tunnels', () async {
+      final (bridge, a, b) = await bridgeTunnel();
+      final port1 = bridge.boundPort1!;
+      final port2 = bridge.boundPort2!;
 
-      test('TunnelHub', () async {
-        final echo = await Target.bind(echo: true);
-        addTearDown(echo.close);
-        final hub = TunnelHub(0, servicePorts: {'svc': 0});
-        await hub.start();
-        final controlPort = hub.boundControlPort!;
-        final publicPort = hub.boundPorts['svc']!;
+      bridge.close();
+      await expectRefused(port1);
+      await expectRefused(port2);
+      await a.done;
+      await b.done;
+    });
 
-        final agent = TunnelServerAgent(
-          'localhost',
-          controlPort,
-          'svc',
-          echo.port,
-          poolSize: 1,
-        );
-        await agent.start();
-        addTearDown(agent.close);
-        await until(() => agent.publicPort != null);
+    test('TunnelBridge close(closeActiveTunnels: false) keeps them until a '
+        'later close()', () async {
+      final (bridge, a, b) = await bridgeTunnel();
+      final port1 = bridge.boundPort1!;
 
-        final client = await Peer.connect(publicPort);
-        addTearDown(client.destroy);
-        await client.sendText('before ');
-        await until(() => client.text == 'before ');
+      bridge.close(closeActiveTunnels: false);
+      await expectRefused(port1);
 
-        hub.close();
-        await expectLater(
-          Socket.connect('localhost', controlPort),
-          throwsA(isA<SocketException>()),
-        );
-        await expectLater(
-          Socket.connect('localhost', publicPort),
-          throwsA(isA<SocketException>()),
-        );
+      await b.sendText('pong');
+      await until(() => a.text == 'pong');
+      expect(a.isDone || b.isDone, isFalse);
 
-        await client.sendText('after');
-        await until(() => client.text == 'before after');
-      });
-    },
-  );
+      bridge.close();
+      await a.done;
+      await b.done;
+    });
+
+    test('TunnelHub closes the listeners, parked agent connections, waiting '
+        'clients and active tunnels', () async {
+      final (hub, client, echo) = await hubTunnel();
+      final controlPort = hub.boundControlPort!;
+      final publicPort = hub.boundPorts['svc']!;
+
+      // A raw parked server conn (no agent to refill it) and a client waiting
+      // on a service that has no server.
+      final parked = await RawConn.connect(controlPort);
+      addTearDown(parked.destroy);
+      parked.send(Frame.hello(role: 'server', service: 'other'));
+      expect((await parked.read()).type, FrameType.welcome);
+
+      final waiting = await RawConn.connect(controlPort);
+      addTearDown(waiting.destroy);
+      waiting.send(Frame.hello(role: 'client', service: 'nobody'));
+
+      // A connection that never sends its HELLO.
+      final silent = await Peer.connect(controlPort);
+      addTearDown(silent.destroy);
+
+      // Give the hub time to accept/register both.
+      await settle();
+
+      // The hub sends nothing more to these until it closes them, so a read
+      // fails only when the connection is closed (a read timeout would be a
+      // TimeoutException instead).
+      final closedRead = throwsA(
+        anyOf(isA<StateError>(), isA<SocketException>()),
+      );
+      final parkedClosed = expectLater(parked.read(), closedRead);
+      final waitingClosed = expectLater(waiting.read(), closedRead);
+
+      hub.close();
+      await expectRefused(controlPort);
+      await expectRefused(publicPort);
+
+      await client.done;
+      await echo.peers.single.done;
+      await parkedClosed;
+      await waitingClosed;
+      await silent.done;
+    });
+
+    test('TunnelHub close(closeActiveTunnels: false) keeps them until a later '
+        'close()', () async {
+      final (hub, client, echo) = await hubTunnel();
+      final controlPort = hub.boundControlPort!;
+
+      hub.close(closeActiveTunnels: false);
+      await expectRefused(controlPort);
+
+      await client.sendText('after');
+      await until(() => client.text == 'before after');
+      expect(client.isDone, isFalse);
+
+      hub.close();
+      await client.done;
+      await echo.peers.single.done;
+    });
+  });
 
   group('hub control protocol (raw agent connections)', () {
     late TunnelHub hub;
@@ -1011,11 +1105,12 @@ void main() {
     );
 
     /// Connects a client that waits for "svc" (no server yet), optionally sends
-    /// [data], then disconnects; then lets the hub observe the close
-    /// (`SocketAsync` closes 1s after EOF) and starts a publisher.
+    /// [data], then disconnects; then lets the hub observe the EOF for
+    /// [settleMs] and starts a publisher.
     Future<Target> clientGoneBeforeServer({
       required bool verbose,
       String? data,
+      int settleMs = 1500,
     }) async {
       final echo = await Target.bind(echo: true);
       addTearDown(echo.close);
@@ -1031,7 +1126,7 @@ void main() {
       final gone = await Peer.connect(hub.boundPorts['svc']!);
       if (data != null) await gone.sendText(data);
       gone.destroy();
-      await settle(1500);
+      await settle(settleMs);
 
       final agent = TunnelServerAgent(
         'localhost',
@@ -1060,18 +1155,111 @@ void main() {
       expect(echo.peers.map((p) => p.text), ['served']);
     });
 
-    // Pinned current behaviour (flagged): a waiting client's socket is paused
-    // once it has sent data (to bound buffering), so its EOF is not seen while
-    // it waits. It stays queued, takes the next parked connection, and its
-    // buffered bytes still reach the service after it disconnected.
-    test('a waiting client that sent data before disconnecting is still '
-        'paired and its bytes delivered (pinned)', () async {
-      final echo = await clientGoneBeforeServer(
-        verbose: false,
-        data: 'sent-then-gone',
+    // Regression: the waiting client's socket used to be paused as soon as it
+    // sent data, hiding its EOF; it then took the next parked connection and
+    // its bytes reached the service after it had disconnected.
+    for (final settleMs in [1500, 200]) {
+      test(
+        'a waiting client that sent data before disconnecting is evicted '
+        'and its bytes never reach the service (settle ${settleMs}ms)',
+        () async {
+          final echo = await clientGoneBeforeServer(
+            verbose: false,
+            data: 'sent-then-gone',
+            settleMs: settleMs,
+          );
+          await settle();
+          expect(echo.peers.map((p) => p.text), ['served']);
+        },
       );
-      await until(() => echo.peers.any((p) => p.text == 'sent-then-gone'));
-    });
+    }
+
+    test(
+      'bytes a live client sends while waiting (beyond the buffering '
+      'limit) are delivered intact and in order once a server arrives',
+      () async {
+        final echo = await Target.bind(echo: true);
+        addTearDown(echo.close);
+        final hub = TunnelHub(0, servicePorts: {'svc': 0});
+        await hub.start();
+        addTearDown(hub.close);
+
+        final client = await Peer.connect(hub.boundPorts['svc']!);
+        addTearDown(client.destroy);
+
+        // Many small writes, then one large one, all before any server exists:
+        // more than [SocketAsync.maxBufferedInput] in total.
+        final expected = BytesBuilder();
+        for (var i = 0; i < 64; i++) {
+          final chunk = pattern(97, i);
+          expected.add(chunk);
+          await client.send(chunk);
+        }
+        final big = pattern(SocketAsync.maxBufferedInput * 4, 999);
+        expected.add(big);
+        client.socket.add(big); // not awaited: the hub stops reading at the cap
+        await settle();
+
+        final agent = TunnelServerAgent(
+          'localhost',
+          hub.boundControlPort!,
+          'svc',
+          echo.port,
+          poolSize: 1,
+        );
+        await agent.start();
+        addTearDown(agent.close);
+
+        final want = expected.toBytes();
+        await until(() => client.length >= want.length);
+        expectSameBytes(client.bytes, want);
+        expectSameBytes(echo.peers.single.bytes, want);
+      },
+    );
+
+    test(
+      'a client agent whose HELLO is followed by its EOF is not paired',
+      () async {
+        final echo = await Target.bind(echo: true);
+        addTearDown(echo.close);
+        final hub = TunnelHub(0);
+        await hub.start();
+        addTearDown(hub.close);
+
+        // HELLO, a payload and the EOF can all be seen by the hub while the
+        // connection is still framed (before the client is adopted).
+        final gone = await Socket.connect('localhost', hub.boundControlPort!);
+        ignoreWriteErrors(gone);
+        gone.add([
+          ...encodeFrame(Frame.hello(role: 'client', service: 'svc')),
+          ...utf8.encode('stale'),
+        ]);
+        await gone.close();
+        gone.destroy();
+        await settle();
+
+        final agent = TunnelServerAgent(
+          'localhost',
+          hub.boundControlPort!,
+          'svc',
+          echo.port,
+          poolSize: 1,
+        );
+        await agent.start();
+        addTearDown(agent.close);
+
+        final app = await RawConn.connect(hub.boundControlPort!);
+        addTearDown(app.destroy);
+        app.send(Frame.hello(role: 'client', service: 'svc'));
+        final raw = SocketAsync.adopt(app.conn);
+        final rx = BytesBuilder();
+        raw.listen((d) => rx.add(d));
+        raw.add(utf8.encode('served'));
+        await until(() => rx.length == 6);
+        await settle();
+        expect(echo.peers.map((p) => p.text), ['served']);
+      },
+    );
   });
 
   group('server agent lifecycle (scripted hub)', () {
