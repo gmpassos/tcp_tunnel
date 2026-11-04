@@ -17,9 +17,16 @@
   `close()` issued while `start()` was still binding left the port listening.
   The port is now released as soon as the bind completes, and the bound port
   getters stay `null`.
+- `TunnelHub`: the 2.3.0 fix "a pairing whose server-agent connection closes
+  before its `READY` now fails at once" did not work for public port clients.
+  Their listener ran outside the hub's guarded zone, so the activation's error
+  never reached them (a future's error is not delivered across error zones),
+  and they waited out `clientWaitTimeout`. Public ports now accept in the
+  guarded zone, like the control port.
 - Tests: `close()` of both agents (active tunnels, graceful variant,
-  idempotency, a hub connect still pending at `close()`), and `close()` during
-  `start()` for all four listeners. All on port 0 listeners.
+  idempotency, a hub connect or a target connect still pending at `close()`),
+  and `close()` during `start()` for all four listeners. All on port 0
+  listeners.
 
 ## 2.3.0
 

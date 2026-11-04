@@ -978,6 +978,67 @@ void main() {
       await echo.peers.single.done;
     });
 
+    test('TunnelServerAgent closes an activation still dialing its target, '
+        'and drops the target socket once that connect completes', () async {
+      // A clientWaitTimeout longer than any wait here: the public client must
+      // be dropped because the hub sees its activation fail, not by timeout.
+      final hub = TunnelHub(
+        0,
+        servicePorts: {'svc': 0},
+        clientWaitTimeout: const Duration(minutes: 5),
+      );
+      await hub.start();
+      addTearDown(hub.close);
+      final target = await Target.bind();
+      addTearDown(target.close);
+
+      // The agent's target connect (to a port nothing listens on) is held
+      // pending until the test completes it; hub connects go through
+      // `Socket.startConnect`, which is not overridden.
+      final targetPort = await releasedPort();
+      final dialing = Completer<void>();
+      final pendingTarget = Completer<Socket>();
+      Future<Socket> connect(
+        dynamic host,
+        int port, {
+        dynamic sourceAddress,
+        int sourcePort = 0,
+        Duration? timeout,
+      }) {
+        if (port != targetPort) {
+          return Socket.startConnect(host, port).then((task) => task.socket);
+        }
+        dialing.complete();
+        return pendingTarget.future;
+      }
+
+      final agent = TunnelServerAgent(
+        'localhost',
+        hub.boundControlPort!,
+        'svc',
+        targetPort,
+        poolSize: 1,
+      );
+      await IOOverrides.runZoned(agent.start, socketConnect: connect);
+      addTearDown(agent.close);
+      await until(() => agent.publicPort != null);
+
+      final client = await Peer.connect(hub.boundPorts['svc']!);
+      addTearDown(client.destroy);
+      await dialing.future.timeout(_timeout);
+
+      // The hub connection being activated is closed at once, so the hub fails
+      // the activation (before its READY) and drops the public port client.
+      agent.close();
+      await client.done;
+
+      // The late target connect is dropped instead of being piped.
+      pendingTarget.complete(await Socket.connect('localhost', target.port));
+      await until(() => target.peers.length == 1);
+      await target.peers.single.done;
+      expect(target.peers.single.length, 0);
+    });
+
     test('close() while start() is still binding releases the ports', () async {
       // Known ports (free a moment ago), so the test can check they are
       // released even though the bound port getters stay `null`.
