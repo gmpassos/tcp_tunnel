@@ -21,14 +21,27 @@ class PortRange {
       assert(end >= start && end <= 65535, 'end out of range');
 
   /// Parses a `start-end` (or single `port`) string, e.g. `20000-20100`.
+  ///
+  /// Throws a [FormatException] if [spec] is not a number/range, or if the
+  /// range is invalid (ports outside `1..65535`, or `end < start`). The bounds
+  /// are checked explicitly because the constructor's asserts are disabled in
+  /// release/AOT builds (such as a compiled CLI).
   factory PortRange.parse(String spec) {
     final dash = spec.indexOf('-');
+    final int start;
+    final int end;
     if (dash < 0) {
-      final p = int.parse(spec.trim());
-      return PortRange(p, p);
+      start = end = int.parse(spec.trim());
+    } else {
+      start = int.parse(spec.substring(0, dash).trim());
+      end = int.parse(spec.substring(dash + 1).trim());
     }
-    final start = int.parse(spec.substring(0, dash).trim());
-    final end = int.parse(spec.substring(dash + 1).trim());
+    if (start < 1 || start > 65535 || end < start || end > 65535) {
+      throw FormatException(
+        'Invalid port range (expected 1-65535 and start <= end)',
+        spec,
+      );
+    }
     return PortRange(start, end);
   }
 
@@ -167,6 +180,10 @@ class TunnelHub {
   /// Resolved public port for each service (after [start]). A dynamically
   /// allocated port (requested as `0`) appears here as its concrete value.
   Map<String, int> get boundPorts => Map.unmodifiable(_boundPorts);
+
+  /// The control port actually bound (after [start]), or `null` if not
+  /// started. Differs from [controlPort] when it is `0` (OS-chosen port).
+  int? get boundControlPort => _controlServer?.port;
 
   bool _started = false;
 

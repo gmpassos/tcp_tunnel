@@ -343,6 +343,10 @@ class TunnelClientAgent {
   ServerSocket? _server;
   bool _started = false;
 
+  /// The local port actually bound (after [start]), or `null` if not started.
+  /// Differs from [listenPort] when it is `0` (OS-chosen ephemeral port).
+  int? get boundListenPort => _server?.port;
+
   /// Starts listening for local application connections.
   Future<void> start() async {
     if (_started) return;

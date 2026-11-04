@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:logging/logging.dart' as logging;
+
 import 'tcp_tunnel_base.dart';
 
 final _log = logging.Logger('TunnelLocalServer');
@@ -28,14 +29,27 @@ class TunnelLocalServer {
 
   ServerSocket? _server;
 
+  /// The port actually bound (after [start]), or `null` if not started.
+  /// Differs from [listenPort] when it is `0` (OS-chosen ephemeral port).
+  int? get boundPort => _server?.port;
+
   bool _started = false;
 
   /// Starts the tunnel server.
+  ///
+  /// If [listenPort] cannot be bound the error is rethrown and [start] may be
+  /// retried.
   Future<void> start() async {
     if (_started) return;
     _started = true;
 
-    final server = _server = await ServerSocket.bind('0.0.0.0', listenPort);
+    final ServerSocket server;
+    try {
+      server = _server = await ServerSocket.bind('0.0.0.0', listenPort);
+    } catch (_) {
+      _started = false;
+      rethrow;
+    }
 
     server.listen((Socket socket) {
       Tunnel.targetPort(
