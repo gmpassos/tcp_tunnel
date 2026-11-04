@@ -82,6 +82,12 @@ void expectSameBytes(List<int> actual, List<int> expected) {
   expect(checksum(actual), checksum(expected), reason: 'checksum');
 }
 
+/// A write racing the peer's reset (e.g. an echo or a frame sent while the
+/// other side tears down) fails the socket's `done` future; unobserved, that is
+/// an uncaught error in the test zone. Reads still report errors via `onError`
+/// and an awaited `flush()` still throws, so nothing a test checks is hidden.
+void ignoreWriteErrors(Socket socket) => socket.done.ignore();
+
 /// One end of a TCP connection that records what it receives and when the
 /// other end closes it. With [echo] it also writes every chunk back.
 class Peer {
@@ -91,6 +97,7 @@ class Peer {
   final Completer<void> _done = Completer<void>();
 
   Peer(this.socket, {this.echo = false}) {
+    ignoreWriteErrors(socket);
     socket.listen(
       (data) {
         _rx.add(data);
@@ -162,7 +169,9 @@ class RawConn {
   final Socket socket;
   final FramedConnection conn;
 
-  RawConn(this.socket) : conn = FramedConnection(socket);
+  RawConn(this.socket) : conn = FramedConnection(socket) {
+    ignoreWriteErrors(socket);
+  }
 
   static Future<RawConn> connect(int port) async =>
       RawConn(await Socket.connect('localhost', port));
@@ -1071,7 +1080,10 @@ void main() {
 
     setUp(() async {
       fakeHub = await ServerSocket.bind('localhost', 0);
-      fakeHub.listen((s) => conns.add(FramedConnection(s)));
+      fakeHub.listen((s) {
+        ignoreWriteErrors(s);
+        conns.add(FramedConnection(s));
+      });
     });
 
     tearDown(() async {
@@ -1180,6 +1192,9 @@ void main() {
       await until(() => conns.length == 2);
       for (final c in conns) {
         expect((await c.readFrame().timeout(_timeout)).type, FrameType.hello);
+      }
+      // Both parked conns are rejected; the agent closes on the first.
+      for (final c in conns) {
         c.writeFrame(Frame.reject('go away'));
       }
       await until(() => conns.every((c) => c.isClosed));
