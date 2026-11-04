@@ -1,3 +1,33 @@
+## 2.2.1
+
+- `TunnelHub`: fixed an activation that could fail when the server agent's
+  `READY` arrived after `parkedIdleTimeout`. The parked-connection loop timed
+  out its read and then started a second `readFrame()` while the first was
+  still pending, which throws; the loop exited, the `READY` was never seen, and
+  the client was dropped after `clientWaitTimeout`. The pending read is now
+  kept and awaited again while the connection is being activated.
+- `decodeFrame`: a payload that is valid JSON but not an object (e.g. `[1,2]`)
+  now throws a `FormatException`, like every other malformed frame, instead of
+  a `TypeError`. The hub already dropped such connections; only the error type
+  changes.
+- Tests: new `test/tcp_tunnel_integration_test.dart`:
+  - framing edge cases: 64 KiB (maximum) payloads, every partial prefix,
+    frames split into single-byte reads and coalesced with raw bytes, malformed
+    headers/payloads (also sent to a live hub, which keeps serving);
+  - injected socket errors (`FramedConnection`, `SocketAsync`);
+  - 4 MiB transfers through the hub in both directions (checksummed),
+    40 concurrent tunnels, several services and client agents on one hub,
+    abrupt client disconnects, half-close;
+  - pool exhaustion, FIFO pairing of queued clients, keepalive `PING`/`PONG`,
+    idle reaping, unreachable targets/hubs, server agent reconnection;
+  - pins that `close()` of `TunnelLocalServer`, `TunnelBridge` and `TunnelHub`
+    only stops listening and leaves already paired tunnels running.
+- CLI tests: `client` mode `loop` grows up to `--max-tunnels` and replaces a
+  closed tunnel; `--parallel` is clamped to `--max-tunnels` (at least `1`).
+- Tests in `test/tcp_tunnel_test.dart` now poll for in-flight data instead of
+  asserting right after a fixed 30 ms sleep, which flaked on a loaded machine.
+- Line coverage of `lib`: ~92.3% → ~99.3%.
+
 ## 2.2.0
 
 - Updated SDK constraint to `^3.13.0`.

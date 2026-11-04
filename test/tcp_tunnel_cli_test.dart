@@ -351,6 +351,102 @@ void main() {
         expect(await cli.waitExit(), 0);
       },
     );
+
+    test('client loop: opens --parallel connections, grows up to '
+        '--max-tunnels as they activate, and replaces a closed one', () async {
+      final echo = await ServerSocket.bind('localhost', 0);
+      addTearDown(echo.close);
+      echo.listen((s) => s.listen(s.add, onError: (_) {}, onDone: s.destroy));
+
+      // Plays the "bridge" side: records every tunnel the CLI dials in.
+      final remote = await ServerSocket.bind('localhost', 0);
+      addTearDown(remote.close);
+      final tunnels = <Socket>[];
+      final received = <StringBuffer>[];
+      remote.listen((s) {
+        final buf = StringBuffer();
+        tunnels.add(s);
+        received.add(buf);
+        utf8.decoder.bind(s).listen(buf.write, onError: (_) {});
+      });
+      addTearDown(() {
+        for (final s in tunnels) {
+          s.destroy();
+        }
+      });
+
+      final cli = await CliProcess.start([
+        'client',
+        'localhost',
+        '${remote.port}',
+        '${echo.port}',
+        'loop',
+        '--max-tunnels',
+        '3',
+        '--parallel',
+        '2',
+      ]);
+      addTearDown(cli.kill);
+      await cli.waitForLine(RegExp(r'^-- Parallel connections: 2'));
+      expect(cli.output, contains('-- Max tunnels: 3'));
+      expect(cli.output, contains('-- Loop: true'));
+
+      // Activates tunnel [i]: the first remote bytes make the CLI dial the
+      // local target, and the echo comes back through the tunnel.
+      Future<void> activate(int i) async {
+        tunnels[i].write('t$i');
+        await tunnels[i].flush();
+        await _until(() => received[i].toString() == 't$i');
+      }
+
+      await _until(() => tunnels.length == 2);
+      await activate(0);
+      // An activated tunnel spawns a fresh idle one, up to the maximum.
+      await _until(() => tunnels.length == 3);
+      await activate(1);
+      await activate(2);
+      await Future<void>.delayed(const Duration(milliseconds: 500));
+      expect(tunnels, hasLength(3), reason: 'must not exceed --max-tunnels');
+
+      // A tunnel that closes is replaced (loop mode reconnects).
+      tunnels[0].destroy();
+      await _until(() => tunnels.length == 4);
+      await activate(3);
+
+      cli.process.kill(ProcessSignal.sigint);
+      expect(await cli.waitExit(), 0);
+    });
+
+    test('client: --parallel is clamped to --max-tunnels, which is at least '
+        '1', () async {
+      final remote = await ServerSocket.bind('localhost', 0);
+      addTearDown(remote.close);
+      final tunnels = <Socket>[];
+      remote.listen(tunnels.add);
+      addTearDown(() {
+        for (final s in tunnels) {
+          s.destroy();
+        }
+      });
+
+      final cli = await CliProcess.start([
+        'client',
+        'localhost',
+        '${remote.port}',
+        '1',
+        '--max-tunnels',
+        '0',
+        '--parallel',
+        '9',
+      ]);
+      addTearDown(cli.kill);
+      await cli.waitForLine(RegExp(r'^-- Parallel connections: 1'));
+      expect(cli.output, contains('-- Max tunnels: 1'));
+      expect(cli.output, contains('-- Loop: false'));
+      await _until(() => tunnels.length == 1);
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+      expect(tunnels, hasLength(1));
+    });
   });
 }
 
