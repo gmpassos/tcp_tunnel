@@ -35,7 +35,7 @@ class SocketAsync {
 
   OnSocketData? _onFirstData;
 
-  SocketAsync._({OnSocketData? onFirstData}) : _onFirstData = onFirstData;
+  SocketAsync._({this._onFirstData});
 
   factory SocketAsync.from(
     Socket skt, {

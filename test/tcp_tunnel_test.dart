@@ -910,10 +910,8 @@ void main() {
       b.add(payload(bSeed));
       await a.flush();
       await b.flush();
-      await Future.wait([
-        aDone.future,
-        bDone.future,
-      ]).timeout(Duration(seconds: 30));
+      await Future.wait([aDone.future, bDone.future])
+          .timeout(Duration(seconds: 30));
 
       expect(aRecv, equals(size));
       expect(bRecv, equals(size));
