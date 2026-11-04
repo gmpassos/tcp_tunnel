@@ -462,9 +462,9 @@ void main() {
       expect(s.isClosed, isTrue);
       expect(closes, 1);
 
-      final late = await Socket.connect('localhost', target.port);
-      addTearDown(late.destroy);
-      resolver.complete(late);
+      final lateSocket = await Socket.connect('localhost', target.port);
+      addTearDown(lateSocket.destroy);
+      resolver.complete(lateSocket);
 
       await until(() => target.peers.isNotEmpty);
       await target.peers.first.done; // the late socket was closed
