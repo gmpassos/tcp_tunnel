@@ -22,9 +22,11 @@
   agent whose HELLO arrived together with its EOF.
   - `SocketAsync` keeps reading while no consumer is attached, buffering up to
     `SocketAsync.maxBufferedInput` (64 KiB), and only pauses beyond that; the
-    buffered bytes are delivered intact and in order once a consumer attaches.
-    A peer that closes after filling the buffer is only noticed once reading
-    resumes (after pairing).
+    buffered bytes are delivered intact and in order once a consumer attaches,
+    as a single chunk (delivering several chunks back to back would `add` to
+    the destination while its previous `flush` was pending, which an `IOSink`
+    rejects, losing data). A peer that closes after filling the buffer is only
+    noticed once reading resumes (after pairing).
   - New `SocketAsync.isInputDone`: the peer's EOF/error was seen.
   - Note: a waiting client that half-closes (sends, then shuts down its write
     side) is treated as disconnected and is not paired.

@@ -255,12 +255,24 @@ class SocketAsync {
     _listener = listener;
 
     if (_inBuffer.isNotEmpty) {
-      var buffered = List<Uint8List>.of(_inBuffer);
+      // Deliver everything buffered as ONE chunk: a listener that writes and
+      // returns the destination's flush (as [Tunnel] does) must not be called
+      // again before that flush completes (an `IOSink` rejects an `add` while
+      // flushing), which a loop over the chunks would do. The buffer is
+      // bounded by [maxBufferedInput] (plus one read).
+      final Uint8List data;
+      if (_inBuffer.length == 1) {
+        data = _inBuffer.first;
+      } else {
+        final builder = BytesBuilder(copy: false);
+        for (var chunk in _inBuffer) {
+          builder.add(chunk);
+        }
+        data = builder.takeBytes();
+      }
       _inBuffer.clear();
       _inBufferBytes = 0;
-      for (var data in buffered) {
-        _deliver(listener, data);
-      }
+      _deliver(listener, data);
     }
 
     if (_pausedNoConsumer) {

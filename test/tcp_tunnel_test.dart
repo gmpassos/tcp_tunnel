@@ -603,6 +603,34 @@ void main() {
   });
 
   group('TunnelBridge buffering and isolation', () {
+    test('several chunks sent while queued are all delivered in order after '
+        'pairing', () async {
+      final bridge = TunnelBridge(0, 0);
+      await bridge.start();
+
+      // Separate writes, each given time to arrive as its own read, so the
+      // queued socket buffers several chunks before it has a peer.
+      final a = await Socket.connect('localhost', bridge.boundPort1!);
+      final expected = <int>[];
+      for (var i = 0; i < 8; i++) {
+        final chunk = List<int>.generate(100, (j) => (i * 31 + j) & 0xFF);
+        expected.addAll(chunk);
+        a.add(chunk);
+        await a.flush();
+        await _wait(40);
+      }
+
+      final b = await Socket.connect('localhost', bridge.boundPort2!);
+      final bReceived = <int>[];
+      b.listen(bReceived.addAll);
+
+      await eventually(() => expect(bReceived, equals(expected)));
+
+      await a.close();
+      await b.close();
+      bridge.close();
+    });
+
     test('data sent while queued is delivered after pairing', () async {
       final bridge = TunnelBridge(0, 0);
       await bridge.start();

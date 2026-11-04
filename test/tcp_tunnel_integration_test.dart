@@ -1194,6 +1194,8 @@ void main() {
           final chunk = pattern(97, i);
           expected.add(chunk);
           await client.send(chunk);
+          // Let each write arrive as its own read (several buffered chunks).
+          await settle(10);
         }
         final big = pattern(SocketAsync.maxBufferedInput * 4, 999);
         expected.add(big);
